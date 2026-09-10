@@ -1,0 +1,27 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Large/raw datasets
+data/firm_data/
+data/sattelite_img/raw/
+
+# Raw agricultural source files
+data/Agriculture/*.geojson
+data/Agriculture/partially_completely_burnt_*.geojson
+
+# Temporary files
+*.tmp
+*.temp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
