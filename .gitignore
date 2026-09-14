@@ -7,14 +7,19 @@ ENV/
 env.bak/
 venv.bak/
 
-# Python
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyc
+
+# Temporary files
+*.tmp
+*.temp
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
 
 # Project specific data and outputs
 data/
