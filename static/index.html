@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FireWatch India | Advanced Detection</title>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>🛰️ FireWatch India - Advanced Thermal Detection System</h1>
+            <p>Monitor real-time thermal anomalies and click on active zones to analyze environmental factors and determine the threat classification.</p>
+        </header>
+        
+        <main>
+            <div class="map-container">
+                <div id="map"></div>
+                <div class="overlay-glow"></div>
+            </div>
+            
+            <div class="sidebar">
+                <div id="initial-state" class="info-card info-message">
+                    <p>👈 Select a region or thermal anomaly on the map to perform deep analysis.</p>
+                </div>
+                
+                <div id="results-state" class="results-container hidden">
+                    <div id="alert-card" class="metric-card">
+                        <h4>INCIDENT CLASSIFICATION</h4>
+                        <h2 id="classification-result">ANALYZING...</h2>
+                        <h1 id="confidence-result">0% Confidence</h1>
+                    </div>
+                    
+                    <div class="location-details">
+                        <h3>Location</h3>
+                        <div class="code-block" id="location-coords">LAT: -- <br>LON: --</div>
+                    </div>
+                    
+                    <h3>Local Environmental Readings</h3>
+                    <div class="env-grid">
+                        <div class="env-card">
+                            <span class="env-label">TEMPERATURE</span>
+                            <span class="env-value" id="val-temp">-- °C</span>
+                        </div>
+                        <div class="env-card">
+                            <span class="env-label">HUMIDITY</span>
+                            <span class="env-value" id="val-hum">-- %</span>
+                        </div>
+                        <div class="env-card">
+                            <span class="env-label">CO2 LEVELS</span>
+                            <span class="env-value" id="val-co2">-- ppm</span>
+                        </div>
+                        <div class="env-card">
+                            <span class="env-label">PARTICULATE (PM)</span>
+                            <span class="env-value" id="val-pm">-- µg/m³</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="loading-state" class="loading-container hidden">
+                    <div class="spinner"></div>
+                    <p>Analyzing spectral and environmental signatures...</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="script.js"></script>
+</body>
+</html>

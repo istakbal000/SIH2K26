@@ -1,0 +1,28 @@
+random_seed: 42
+
+osm_buffers:
+  - 250
+  - 500
+  - 1000
+  - 2000
+  - 5000
+
+models:
+  random_forest: true
+  logistic_regression: false
+  xgboost: false
+  lightgbm: false
+
+training:
+  spatial_split: true
+  temporal_split: true
+
+output:
+  models: "models/"
+  metrics: "outputs/metrics/"
+  plots: "outputs/plots/"
+  predictions: "outputs/predictions/"
+
+data:
+  raw_dir: "data/raw/"
+  processed_dir: "data/processed/"
