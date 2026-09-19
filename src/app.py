@@ -12,6 +12,8 @@ load_dotenv()
 # Add project root to path so we can import scripts
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from src.database import init_db, save_user_detection, get_recent_detections
+
 # Reuse the inference functions
 from scripts.test_inference import (
     predict_rf, 
@@ -30,6 +32,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+def startup_event():
+    # Initialize the PostGIS database connection and schema
+    init_db()
 
 class AnalyzeRequest(BaseModel):
     lat: float
@@ -153,9 +160,25 @@ def analyze_location(req: AnalyzeRequest):
     classification = "FOREST FIRE" if forest_final_score > ind_final_score else "INDUSTRIAL FIRE"
     confidence = max(forest_final_score, ind_final_score) * 100
 
+    # Save to PostGIS database
+    db_result = save_user_detection(
+        lat=lat,
+        lon=lon,
+        scenario=scenario,
+        classification=classification,
+        confidence=confidence,
+        temp=display_temp,
+        hum=display_hum,
+        co2=display_co2,
+        pm=display_pm,
+        source="user_web",
+        raw_data={"forest_score": forest_final_score, "industrial_score": ind_final_score}
+    )
+
     return {
         "status": "success",
         "scenario": scenario,
+        "database": db_result,
         "results": {
             "classification": classification,
             "confidence": round(confidence, 1),
@@ -167,6 +190,22 @@ def analyze_location(req: AnalyzeRequest):
             }
         }
     }
+
+@app.get("/api/detections")
+def get_detections(limit: int = 50):
+    return get_recent_detections(limit)
+
+@app.get("/api/db-status")
+def db_status():
+    from src.database import get_db_connection
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT default_version, installed_version FROM pg_available_extensions WHERE name = 'postgis';")
+                postgis = cur.fetchone()
+                return {"status": "ok", "postgis_installed": bool(postgis and postgis.get('installed_version'))}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # Mount static files to serve the frontend
 static_dir = os.path.join(os.path.dirname(__file__), '..', 'static')

@@ -38,6 +38,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         noWrap: true
     }).addTo(map);
 
+    // Layer group for historical detections
+    const historyLayer = L.layerGroup().addTo(map);
+    loadHistory(historyLayer);
+
     // 3. Add NASA FIRMS WMS Layer
     if (mapKey && mapKey.length > 5 && !mapKey.startsWith('pk.')) {
         // VIIRS 24h gives near real-time thermal anomalies
@@ -77,6 +81,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             if (data.status === 'success') {
                 updateResultsUI(lat, lon, data.results);
+                
+                // Update DB Status badge
+                const dbBadge = document.getElementById('db-status-badge');
+                if (data.database && data.database.saved) {
+                    dbBadge.innerText = `💾 Saved to PostGIS (Record #${data.database.record_id} | SRID: 4326)`;
+                    dbBadge.className = 'db-badge';
+                    // Plot on history layer (optimistic UI)
+                    loadHistory(historyLayer); 
+                } else {
+                    dbBadge.innerText = `⚠️ Failed to save to PostGIS`;
+                    dbBadge.className = 'db-badge error';
+                }
+                dbBadge.classList.remove('hidden');
             }
         } catch (e) {
             console.error(e);
@@ -112,5 +129,42 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('val-hum').innerText = `${results.environmental.humidity} %`;
         document.getElementById('val-co2').innerText = `${results.environmental.co2} ppm`;
         document.getElementById('val-pm').innerText = `${results.environmental.pm} µg/m³`;
+    }
+
+    async function loadHistory(layerGroup) {
+        try {
+            const res = await fetch('/api/detections');
+            const data = await res.json();
+            if (data.type === 'FeatureCollection' && data.features) {
+                data.features.forEach(feature => {
+                    if (feature.geometry && feature.geometry.coordinates) {
+                        const [lon, lat] = feature.geometry.coordinates;
+                        const props = feature.properties;
+                        
+                        const color = props.classification.includes("INDUSTRIAL") ? "orange" : "red";
+                        
+                        const marker = L.circleMarker([lat, lon], {
+                            radius: 8,
+                            fillColor: color,
+                            color: "#fff",
+                            weight: 1,
+                            opacity: 1,
+                            fillOpacity: 0.8
+                        });
+                        
+                        marker.bindPopup(`
+                            <b>${props.classification}</b><br>
+                            Conf: ${props.confidence}%<br>
+                            Date: ${new Date(props.created_at).toLocaleString()}<br>
+                            Temp: ${props.temperature}°C, PM: ${props.pm}µg/m³
+                        `);
+                        
+                        layerGroup.addLayer(marker);
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn("Could not load history:", e);
+        }
     }
 });

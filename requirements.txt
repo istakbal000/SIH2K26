@@ -18,3 +18,4 @@ tqdm
 fastapi
 uvicorn
 python-dotenv
+psycopg[binary]
