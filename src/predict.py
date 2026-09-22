@@ -77,6 +77,22 @@ def predict_dict(data: dict, model, scaler, medians: dict) -> dict:
         "input_features": engineered,
     }
 
+def fuse_predictions(tabular: dict, image: dict, w_tabular: float = 0.6) -> dict:
+    """Weighted fusion of the tabular (environmental) fire probability and the image CNN probability."""
+    w_tabular = max(0.0, min(1.0, w_tabular))
+    w_image = round(1.0 - w_tabular, 4)
+    p_fire = w_tabular * tabular["probability"]["fire"] + w_image * image["probability"]["fire"]
+    fire = p_fire >= 0.5
+    confidence = p_fire if fire else 1 - p_fire
+    return {
+        "fire_detected": bool(fire),
+        "prediction": int(fire),
+        "confidence": round(confidence, 6),
+        "probability": {"no_fire": round(1 - p_fire, 6), "fire": round(p_fire, 6)},
+        "message": "FIRE DETECTED" if fire else "NO FIRE",
+        "weights": {"tabular": round(w_tabular, 4), "image": w_image},
+    }
+
 def main():
     parser = argparse.ArgumentParser(description="Predict fire from environmental conditions and output JSON")
     parser.add_argument("--input", type=str, default=None, help="JSON string with environmental readings")

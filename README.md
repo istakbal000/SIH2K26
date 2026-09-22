@@ -141,13 +141,32 @@ Then open http://localhost:5000
 3. Backend fetches live weather (temp, humidity, pressure) + air quality (PM2.5, PM10) from Open-Meteo for that exact location.
 4. Features are assembled (real weather values + training medians for sensor-only fields) and the ML model runs.
 5. Panel shows: 🔥 verdict, confidence gauge, fire/no-fire probability, full weather, AQI, and the exact feature values used.
-6. The panel also has an **Image detection** upload box — drop a fire/satellite photo and the CNN (`models/image_det.pth`) detects fire independently.
+6. The panel's **Image detection** upload box posts the photo to `/api/predict/fused`, which runs the environmental model + the image CNN and shows both verdicts plus the fused one.
 
 Backend endpoints:
 - `GET /api/fires?days=2` — FIRMS hotspots (uses `.env` key; `&key=` also accepted)
 - `GET /api/weather?lat=&lon=` — live weather + AQI
-- `POST /api/predict` `{"lat":…,"lon":…,"utc":…}` — AI prediction JSON
+- `POST /api/predict` `{"lat":…,"lon":…,"utc":…}` — AI prediction JSON (tabular model)
 - `POST /api/image/predict` (multipart `image` field) — fire/no-fire via CNN
+- `POST /api/predict/fused` (multipart: `lat`,`lon`,`utc`,`features` (JSON),`image`) — **combined detection**
+
+### Combined detection (environmental + image)
+
+`/api/predict/fused` runs **both** models in the backend and fuses their fire probabilities:
+environmental parameters → tabular Random Forest; image → CNN. Returns:
+
+```json
+{
+  "tabular": { "... tabular result, incl. weather, features_used ..." },
+  "image":   { "fire_detected": true, "probability": {"fire": 0.87, "no_fire": 0.13}, ... },
+  "fused":   { "fire_detected": true, "probability": {"fire": 0.74, "no_fire": 0.26},
+               "confidence": 0.74, "message": "FIRE DETECTED",
+               "weights": {"tabular": 0.6, "image": 0.4} }
+}
+```
+
+Fusion = `0.6 × tabular_fire_prob + 0.4 × image_fire_prob`, fire when `>= 0.5`.
+The map popup's image box uses this endpoint and shows all three verdicts.
 
 ## Image based Fire Detection (binary)
 

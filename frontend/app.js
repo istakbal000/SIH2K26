@@ -252,7 +252,7 @@ function renderResult(d) {
       Image detection (upload a photo)
     </div>
     <div class="image-box" id="imageBox">
-      <p>Upload a fire / satellite image and the CNN will detect fire independently.</p>
+      <p>Upload a fire / satellite image — the backend fuses the environmental model with the image CNN.</p>
       <input type="file" id="imageInput" accept="image/*">
       <button class="btn btn-primary" id="imageAnalyzeBtn">Detect fire in image</button>
       <div id="imageResult"></div>
@@ -268,17 +268,22 @@ function renderResult(d) {
     imgBtn.addEventListener('click', async () => {
       const f = imgInput.files[0];
       if (!f) { imgRes.textContent = '⚠ Pick an image first'; imgRes.className = 'img-res err'; return; }
-      imgRes.textContent = 'Analyzing image…';
+      imgRes.textContent = 'Running environmental + image CNN fusion…';
       imgRes.className = 'img-res';
       const fd = new FormData();
       fd.append('image', f);
+      fd.append('lat', d.coordinate.latitude);
+      fd.append('lon', d.coordinate.longitude);
+      if (d.coordinate.utc != null) fd.append('utc', d.coordinate.utc);
+      fd.append('features', JSON.stringify(d.features_used));
       try {
-        const res = await fetch('/api/image/predict', { method: 'POST', body: fd });
-        const d = await res.json();
-        if (!res.ok) throw new Error(d.error || 'Image prediction failed');
-        const emoji = d.fire_detected ? '🔥' : '🌿';
-        imgRes.innerHTML = `<span class="img-verdict ${d.fire_detected ? 'v-fire' : 'v-safe'}">${emoji} ${d.message}</span>
-          <div>confidence ${(d.confidence * 100).toFixed(1)}% · fire ${(d.probability.fire * 100).toFixed(1)}% / no-fire ${(d.probability.no_fire * 100).toFixed(1)}%</div>`;
+        const res = await fetch('/api/predict/fused', { method: 'POST', body: fd });
+        const r = await res.json();
+        if (!res.ok) throw new Error(r.error || 'Fused prediction failed');
+        const fu = r.fused, tab = r.tabular, im = r.image;
+        const emoji = fu.fire_detected ? '🔥' : '🌿';
+        imgRes.innerHTML = `<span class="img-verdict ${fu.fire_detected ? 'v-fire' : 'v-safe'}">${emoji} ${fu.message} (fused ${(fu.confidence * 100).toFixed(1)}%)</span>
+          <div>environmental model: ${tab.message} ${(tab.probability.fire * 100).toFixed(1)}% · image CNN: ${im.message} ${(im.probability.fire * 100).toFixed(1)}%</div>`;
         imgRes.className = 'img-res ok';
       } catch (e) {
         imgRes.textContent = '⚠ ' + e.message;

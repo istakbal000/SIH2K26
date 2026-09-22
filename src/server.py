@@ -13,7 +13,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from firms import fetch_fires, FirmsError
 from firms import DEFAULT_BBOX
 from weather import get_weather, get_air_quality, weather_to_features
-from predict import predict_dict, sanitize
+from predict import predict_dict, sanitize, fuse_predictions
 import predict as predict_module
 
 logging.basicConfig(level=logging.INFO)
@@ -140,18 +140,8 @@ def weather():
         return jsonify({"error": f"Weather service error: {e}"}), 502
 
 
-@app.route("/api/predict", methods=["POST"])
-def predict():
-    body = request.get_json(silent=True) or {}
-    lat, lon = _parse_coords(body)
-    if lat is None:
-        return jsonify({"error": "lat and lon are required"}), 400
-
-    utc = body.get("utc")
-    logger.info("=" * 62)
-    logger.info("  ML RUN START  |  thermal anomaly at (%.4f, %.4f) utc=%s", lat, lon, utc)
-    logger.info("=" * 62)
-
+def assemble_features(lat: float, lon: float, utc, supplied: dict) -> tuple:
+    """Fetch live weather + air quality and assemble the input feature dict for the tabular model."""
     weather_result = {"weather": None, "air_quality": None}
     try:
         w = get_weather(lat, lon)
@@ -167,8 +157,7 @@ def predict():
     if weather_result["weather"] and weather_result["air_quality"]:
         features = weather_to_features(weather_result["weather"], weather_result["air_quality"])
 
-    supplied = body.get("features") or {}
-    for k, v in supplied.items():
+    for k, v in (supplied or {}).items():
         try:
             features[k] = float(v)
         except (TypeError, ValueError):
@@ -176,7 +165,7 @@ def predict():
                 features[k] = v
 
     if utc is not None:
-        features["UTC"] = int(utc)
+        features["UTC"] = int(float(utc))
     elif weather_result["weather"] and weather_result["weather"].get("observation_time"):
         try:
             from datetime import datetime, timezone
@@ -184,6 +173,22 @@ def predict():
             features["UTC"] = int(obs.timestamp())
         except Exception:
             features["UTC"] = int(time.time())
+    return features, weather_result
+
+
+@app.route("/api/predict", methods=["POST"])
+def predict():
+    body = request.get_json(silent=True) or {}
+    lat, lon = _parse_coords(body)
+    if lat is None:
+        return jsonify({"error": "lat and lon are required"}), 400
+
+    utc = body.get("utc")
+    logger.info("=" * 62)
+    logger.info("  ML RUN START  |  thermal anomaly at (%.4f, %.4f) utc=%s", lat, lon, utc)
+    logger.info("=" * 62)
+
+    features, weather_result = assemble_features(lat, lon, utc, body.get("features"))
 
     art = get_model()
     logger.info("  [model]  loaded -> %s", art["name"])
@@ -236,11 +241,44 @@ def get_image_model():
     return _IMAGE_MODEL or None
 
 
+def run_image_predict(file):
+    """Run the image CNN on an uploaded file. Returns a fire/no-fire result dict."""
+    import io
+    import torch
+    import torchvision
+    from PIL import Image
+
+    art = get_image_model()
+    if art is None:
+        raise RuntimeError("Image model not available; run src/image_det/train_image.py first")
+    img = Image.open(io.BytesIO(file.read())).convert("RGB")
+    model, class_names = art
+    with torch.no_grad():
+        tf = torchvision.transforms.Compose([
+            torchvision.transforms.Resize((224, 224)),
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        logits = model(tf(img).unsqueeze(0))
+        proba = torch.softmax(logits, 1)[0]
+    p_fire = float(proba[class_names.index("fire")])
+    fire = bool(p_fire >= 0.5)
+    return {
+        "fire_detected": fire,
+        "prediction": int(fire),
+        "confidence": round(p_fire if fire else 1 - p_fire, 6),
+        "probability": {
+            "no_fire": round(1 - p_fire, 6),
+            "fire": round(p_fire, 6),
+        },
+        "message": "FIRE DETECTED" if fire else "NO FIRE",
+    }
+
+
 @app.route("/api/image/predict", methods=["POST"])
 def image_predict():
     """Detect fire in an uploaded image. Returns fire/no-fire + confidence."""
-    art = get_image_model()
-    if art is None:
+    if get_image_model() is None:
         return jsonify({"error": "Image model not available. Run image training first, then restart server with .venv python."}), 501
 
     file = request.files.get("image")
@@ -248,34 +286,60 @@ def image_predict():
         return jsonify({"error": "field 'image' (file) is required"}), 400
 
     try:
-        import io
-        import torch
-        import torchvision
-        from PIL import Image
-        img = Image.open(io.BytesIO(file.read())).convert("RGB")
-        model, class_names = art
-        with torch.no_grad():
-            tf = torchvision.transforms.Compose([
-                torchvision.transforms.Resize((224, 224)),
-                torchvision.transforms.ToTensor(),
-                torchvision.transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ])
-            logits = model(tf(img).unsqueeze(0))
-            proba = torch.softmax(logits, 1)[0]
-        p_fire = float(proba[class_names.index("fire")])
-        fire = bool(p_fire >= 0.5)
-        return jsonify({
-            "fire_detected": fire,
-            "prediction": int(fire),
-            "confidence": round(p_fire if fire else 1 - p_fire, 6),
-            "probability": {
-                "no_fire": round(1 - p_fire, 6),
-                "fire": round(p_fire, 6),
-            },
-            "message": "FIRE DETECTED" if fire else "NO FIRE",
-        })
+        return jsonify(run_image_predict(file))
     except Exception as e:
         return jsonify({"error": f"Image prediction failed: {e}"}), 500
+
+
+@app.route("/api/predict/fused", methods=["POST"])
+def predict_fused():
+    """Combined detection: environmental parameters (tabular model, from form fields) + satellite image (CNN)."""
+    body = {k: v for k, v in request.form.items()}
+    if request.files.get("image") is None:
+        return jsonify({"error": "field 'image' (file) is required"}), 400
+
+    lat, lon = _parse_coords(body)
+    if lat is None:
+        return jsonify({"error": "lat and lon are required"}), 400
+
+    logger.info("=" * 62)
+    logger.info("  FUSED RUN START  |  env-params + image at (%.4f, %.4f)", lat, lon)
+    logger.info("=" * 62)
+
+    supplied = body.get("features")
+    if isinstance(supplied, str):
+        try:
+            supplied = json.loads(supplied)
+        except Exception:
+            supplied = {}
+
+    features, weather_result = assemble_features(lat, lon, body.get("utc"), supplied)
+
+    art = get_model()
+    logger.info("  [model]  tabular -> %s", art["name"])
+    tabular = predict_dict(features, art["model"], art["scaler"], art["medians"])
+    tabular["coordinate"] = {"latitude": lat, "longitude": lon, "utc": features.get("UTC")}
+    tabular["weather"] = weather_result["weather"]
+    tabular["air_quality"] = weather_result["air_quality"]
+    tabular["features_used"] = tabular.pop("input_features")
+
+    logger.info("  [infer]  tabular -> %s (%.2f%%)", tabular["message"], tabular["probability"]["fire"] * 100)
+    try:
+        image = run_image_predict(request.files["image"])
+        logger.info("  [infer]  image CNN -> %s (%.2f%%)", image["message"], image["probability"]["fire"] * 100)
+    except Exception as e:
+        logger.warning("  [infer]  image CNN failed (%s)", e)
+        return jsonify({"error": f"Image prediction failed: {e}"}), 500
+
+    fused = fuse_predictions(tabular, image)
+    logger.info("  [fuse]   p=%.3f*%.2f + %.3f*%.2f => %.3f  (>0.5 fire)",
+                fused["weights"]["tabular"], tabular["probability"]["fire"],
+                fused["weights"]["image"], image["probability"]["fire"],
+                fused["probability"]["fire"])
+    logger.info("  [done]   fused verdict -> %s (%.1f%%)", fused["message"], fused["confidence"] * 100)
+    logger.info("-" * 62)
+
+    return jsonify({"tabular": tabular, "image": image, "fused": fused})
 
 
 def _parse_coords(body=None):
