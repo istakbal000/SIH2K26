@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import joblib
 
-from config import TARGET_COL
+from detection_config import TARGET_COL
 from features import sanitize, FINAL_FEATURES, add_ratio_features
 
 logging.basicConfig(level=logging.INFO)

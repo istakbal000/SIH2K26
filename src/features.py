@@ -1,5 +1,5 @@
 import pandas as pd
-from config import FEATURES, TARGET_COL
+from detection_config import FEATURES, TARGET_COL
 
 TIMESTAMP_COL = 'timestamp'
 

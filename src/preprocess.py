@@ -4,7 +4,7 @@ from pathlib import Path
 import logging
 import argparse
 
-from config import TARGET_COL, FEATURES
+from detection_config import TARGET_COL, FEATURES
 from features import sanitize, engineer_features, TIMESTAMP_COL
 
 logging.basicConfig(level=logging.INFO)

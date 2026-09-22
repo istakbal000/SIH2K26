@@ -20,7 +20,7 @@ SIH_2K26/
 ├── notebooks/              # For Jupyter experiments
 ├── .venv/                  # Project python env (torch + all deps, long-path aware)
 ├── src/
-│   ├── config.py           # Paths & constants
+│   ├── detection_config.py # Paths & constants
 │   ├── features.py         # Shared sanitize/feature-order/engineering logic
 │   ├── preprocess.py       # Clean + feature engineering + timestamp
 │   ├── split_data.py       # Train/val/test split + scaling (+ time-based option)

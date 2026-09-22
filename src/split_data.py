@@ -7,7 +7,7 @@ import joblib
 import logging
 import argparse
 
-from config import TARGET_COL
+from detection_config import TARGET_COL
 from features import FINAL_FEATURES, TIMESTAMP_COL
 
 logging.basicConfig(level=logging.INFO)
