@@ -1,0 +1,11 @@
+{
+  "model_name": "random_forest",
+  "val_f1": 1.0,
+  "test_metrics": {
+    "accuracy": 0.9103464793230082,
+    "precision": 1.0,
+    "recall": 0.8336542734409718,
+    "f1": 0.9092818482914613,
+    "roc_auc": 0.869274085416879
+  }
+}

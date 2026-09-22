@@ -1,0 +1,21 @@
+{
+  "Temperature_C": 18.479,
+  "Humidity_%": 50.96,
+  "TVOC_ppb": 360.0,
+  "eCO2_ppm": 400.0,
+  "Raw H2": 12959.0,
+  "Raw Ethanol": 19806.0,
+  "Pressure_hPa": 939.08,
+  "PM1.0": 1.79,
+  "PM2.5": 1.86,
+  "NC0.5": 12.34,
+  "NC1.0": 1.925,
+  "NC2.5": 0.044,
+  "CNT": 8088.0,
+  "hour": 6.0,
+  "day_of_week": 3.0,
+  "month": 6.0,
+  "temp_humidity_ratio": 0.341424,
+  "pm_ratio": 0.666667,
+  "tvoc_eco2_ratio": 0.870324
+}

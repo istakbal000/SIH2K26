@@ -1,0 +1,13 @@
+.venv/
+.python/
+python-*.exe
+__pycache__/
+*.pyc
+.env
+logs/
+datset/
+data/preprocessed/
+data/split/
+.ipynb_checkpoints/
+kaggle.json
+*.zip

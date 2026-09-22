@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GeoFlare: AI powered fire detection, classification &amp; Geospatial Analysis Intelligence System</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-logo">▲</span>
+    <div>
+      <h1>Geo<span>Flare</span></h1>
+      <p class="tagline">AI powered fire detection, classification &amp; Geospatial Analysis Intelligence System</p>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="status-chip" id="statusChip">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">connecting…</span>
+    </div>
+    <div class="stats-chip" id="firesCount" title="Active thermal anomalies">0 anomalies</div>
+    <button class="btn btn-ghost" id="btnRefresh" title="Refresh FIRMS data">⟳ Refresh</button>
+    <button class="btn btn-ghost" id="btnSettings" title="Settings">⚙ Settings</button>
+  </div>
+</header>
+
+<div id="map"></div>
+
+<!-- Layer controls -->
+<div class="layer-control" id="layerControl">
+  <button class="lc-btn active" data-layer="satellite">🛰 Satellite</button>
+  <button class="lc-btn" data-layer="dark">🌑 Dark</button>
+  <button class="lc-btn" data-layer="light">🗺 Light</button>
+</div>
+
+<div class="legend" id="legend">
+  <div class="legend-title">Thermal intensity (FRP)</div>
+  <div class="legend-row"><span class="swatch" style="background:#22c55e"></span><span>Low</span></div>
+  <div class="legend-row"><span class="swatch" style="background:#eab308"></span><span>Medium</span></div>
+  <div class="legend-row"><span class="swatch" style="background:#fb923c"></span><span>High</span></div>
+  <div class="legend-row"><span class="swatch" style="background:#ef4444"></span><span>Extreme</span></div>
+</div>
+
+<!-- Slide-over result panel -->
+<aside class="result-panel" id="resultPanel">
+  <div class="panel-handle" id="panelClose">×</div>
+  <div id="panelContent">
+    <div class="placeholder">
+      <div class="placeholder-icon">🛰</div>
+      <h3>Select a thermal anomaly</h3>
+      <p>Click any fire hotspot on the map. GeoFlare will fetch live weather for that location and run the AI model to detect fire and classify its type.</p>
+    </div>
+  </div>
+</aside>
+
+<!-- Settings modal -->
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Settings</h2>
+      <button class="btn btn-ghost" data-close>×</button>
+    </div>
+    <label class="field">
+      <span>Data source</span>
+      <select id="dataSource">
+        <option value="firms">NASA FIRMS (real satellite data)</option>
+        <option value="demo">Demo markers</option>
+      </select>
+    </label>
+    <div class="field">
+      <span>Server connection</span>
+      <div id="serverConfigNote" class="cfg-note">checking…</div>
+      <small>The NASA FIRMS key is loaded from the server's <code>.env</code> file automatically — no key entry needed here.</small>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" data-close>Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
