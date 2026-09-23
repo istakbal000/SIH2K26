@@ -1,0 +1,21 @@
+[
+  "Temperature_C",
+  "Humidity_%",
+  "TVOC_ppb",
+  "eCO2_ppm",
+  "Raw H2",
+  "Raw Ethanol",
+  "Pressure_hPa",
+  "PM1.0",
+  "PM2.5",
+  "NC0.5",
+  "NC1.0",
+  "NC2.5",
+  "CNT",
+  "hour",
+  "day_of_week",
+  "month",
+  "temp_humidity_ratio",
+  "pm_ratio",
+  "tvoc_eco2_ratio"
+]

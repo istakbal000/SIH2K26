@@ -15,6 +15,8 @@ from firms import DEFAULT_BBOX
 from weather import get_weather, get_air_quality, weather_to_features
 from predict import predict_dict, sanitize, fuse_predictions
 import predict as predict_module
+from fire_classifier import get_classifier, class_meta
+from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -76,6 +78,72 @@ def firms_key_from_request():
 
 
 _fires_cache = {"ts": 0, "data": None}
+_db = {"ready": None, "module": None}
+
+
+def db() -> "module or None":
+    """Lazily import the merged repo's PostGIS module. Returns None if unavailable."""
+    if _db["module"] is not None:
+        return _db["module"]
+    if _db["ready"] is False:
+        return None
+    try:
+        import database
+        _db["module"] = database
+        try:
+            database.init_db()
+        except Exception as e:
+            logger.warning("PostGIS init failed (%s) — detections will not persist", e)
+        return database
+    except Exception as e:
+        logger.warning("PostGIS driver unavailable (%s) — install psycopg[binary] + run PostgreSQL to enable storage", e)
+        _db["ready"] = False
+        return None
+
+
+def classify_and_persist(lat: float, lon: float, utc, weather_result: dict, fire: bool, source: str = "map_analyze"):
+    """Run fire-type classification and store the event in PostGIS when a fire is detected.
+
+    Returns a dict with 'classification' (and optionally 'saved'), or None when no fire
+    was detected (classification is only meaningful for confirmed fires).
+    """
+    if not fire:
+        return None
+
+    hotspots = _fires_cache.get("data") or []
+    classifier = get_classifier()
+    cls = classifier.classify(lat, lon, utc, hotspots, weather=(weather_result or {}).get("weather"))
+    event = {
+        "classification": cls["classification"],
+        "confidence": cls["confidence"],
+        "probabilities": cls["probabilities"],
+        "class_meta": class_meta(cls["classification"]),
+        "source": cls["source"],
+        "details": cls["details"],
+    }
+
+    dbmod = db()
+    if dbmod is not None:
+        w = (weather_result or {}).get("weather") or {}
+        aq = (weather_result or {}).get("air_quality") or {}
+        saved = dbmod.save_user_detection(
+            lat=lat, lon=lon,
+            scenario=None,
+            classification=cls["classification"],
+            confidence=cls["confidence"],
+            temp=w.get("temperature_c"),
+            hum=w.get("humidity_pct"),
+            co2=w.get("co2_ppm"),
+            pm=aq.get("pm2_5"),
+            source=source,
+            raw_data={
+                "fire_detected": fire,
+                "probabilities": cls["probabilities"],
+                "details": cls["details"],
+            },
+        )
+        event["saved"] = saved
+    return event
 
 
 @app.route("/")
@@ -207,6 +275,13 @@ def predict():
     logger.info("  [done]   reply sent to map UI")
     logger.info("-" * 62)
 
+    classification = classify_and_persist(lat, lon, features.get("UTC"), weather_result,
+                                          fire=result["fire_detected"], source="map_analyze")
+    if classification:
+        logger.info("  [classify] detected fire type -> %s (%.1f%%)  %s",
+                    classification["classification"], classification["confidence"] * 100,
+                    classification.get("saved", {}).get("saved") and "saved to GIS" or "")
+
     return jsonify({
         "fire_detected": result["fire_detected"],
         "prediction": result["prediction"],
@@ -217,6 +292,7 @@ def predict():
         "weather": weather_result["weather"],
         "air_quality": weather_result["air_quality"],
         "features_used": result["input_features"],
+        "classification": classification,
     })
 
 
@@ -337,9 +413,30 @@ def predict_fused():
                 fused["weights"]["image"], image["probability"]["fire"],
                 fused["probability"]["fire"])
     logger.info("  [done]   fused verdict -> %s (%.1f%%)", fused["message"], fused["confidence"] * 100)
+
+    classification = classify_and_persist(lat, lon, features.get("UTC"), weather_result,
+                                          fire=fused["fire_detected"], source="map_analyze_fused")
+    if classification:
+        logger.info("  [classify] detected fire type -> %s (%.1f%%)  %s",
+                    classification["classification"], classification["confidence"] * 100,
+                    classification.get("saved", {}).get("saved") and "saved to GIS" or "")
     logger.info("-" * 62)
 
-    return jsonify({"tabular": tabular, "image": image, "fused": fused})
+    return jsonify({"tabular": tabular, "image": image, "fused": fused, "classification": classification})
+
+
+@app.route("/api/detections")
+def detections():
+    """Recent classified fire events persisted in PostGIS, as GeoJSON FeatureCollection."""
+    dbmod = db()
+    if dbmod is None:
+        return jsonify({"type": "FeatureCollection", "features": [], "error": "GIS storage unavailable"}), 200
+    limit = int(request.args.get("limit", 200))
+    try:
+        return jsonify(dbmod.get_recent_detections(limit=limit))
+    except Exception as e:
+        logger.warning("Fetch detections failed (%s)", e)
+        return jsonify({"type": "FeatureCollection", "features": [], "error": str(e)}), 200
 
 
 def _parse_coords(body=None):

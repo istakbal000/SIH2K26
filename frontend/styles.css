@@ -325,5 +325,16 @@ body {
 .img-res.err{color:#f87171}
 .img-res.ok{color:#cbd5e1}
 
+.det-marker{border:1px solid rgba(255,255,255,.55)}
+
+.cls-strip{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:14px;margin-bottom:14px}
+.cls-main{display:flex;gap:12px;align-items:flex-start;margin-bottom:12px}
+.cls-emoji{font-size:26px;line-height:1}
+.cls-k{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#9fb0c9}
+.cls-v{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:19px;margin-top:2px}
+.cls-saved{margin-top:5px;font-size:12px;color:#34d399}
+.cls-saved.off{color:#fbbf24}
+.cls-bars{display:flex;flex-direction:column;gap:6px}
+
 
 

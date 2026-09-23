@@ -7,10 +7,19 @@ const state = {
   baseLayers: {},
   indiaLayer: null,
   firesLayer: null,
+  detectionsLayer: null,
+  gisVisible: true,
   markers: [],
   refreshTimer: null,
   currentFire: null,
   serverConfig: null,
+};
+
+const clsMeta = {
+  agricultural: { color: '#f59e0b', emoji: '🌾', label: 'Agricultural' },
+  forest:       { color: '#16a34a', emoji: '🌲', label: 'Forest' },
+  industrial:   { color: '#dc2626', emoji: '🏭', label: 'Industrial' },
+  Unclassified: { color: '#9ca3af', emoji: '❔', label: 'Unclassified' },
 };
 
 const els = {
@@ -38,6 +47,8 @@ async function init() {
   ]);
   await refreshFires();
   state.refreshTimer = setInterval(refreshFires, FIRMS_REFRESH_MS);
+  buildStackUI();
+  await loadDetections();
   bindEvents();
 }
 
@@ -61,6 +72,86 @@ function initMap() {
   state.baseLayers.satellite.addTo(state.map);
 
   state.firesLayer = L.layerGroup().addTo(state.map);
+  state.detectionsLayer = L.layerGroup().addTo(state.map);
+}
+
+/* ---------------- GIS detection overlay ---------------- */
+
+function buildStackUI() {
+  const ctrl = document.getElementById('layerControl');
+  if (ctrl) {
+    const btn = document.createElement('button');
+    btn.className = 'lc-btn active';
+    btn.textContent = ' Classified detections';
+    btn.title = 'Toggle the saved fire events overlay (from GIS storage)';
+    btn.addEventListener('click', () => {
+      state.gisVisible = !state.gisVisible;
+      btn.classList.toggle('active', state.gisVisible);
+      const ov = document.getElementById('detOverlay');
+      if (ov) ov.style.display = state.gisVisible ? '' : 'none';
+      if (state.gisVisible && state.detectionsLayer.getLayers().length === 0) loadDetections();
+    });
+    ctrl.appendChild(btn);
+  }
+  const leg = document.getElementById('legend');
+  if (leg) {
+    const ov = document.createElement('div');
+    ov.id = 'detOverlay';
+    ov.innerHTML = `
+      <div class="legend-title" style="margin-top:8px;border-top:1px solid rgba(255,255,255,.14);padding-top:8px">Classified detections (GIS· PostGIS)</div>
+      <div class="legend-row"><span class="swatch" style="background:#16a34a"></span><span>Forest</span></div>
+      <div class="legend-row"><span class="swatch" style="background:#dc2626"></span><span>Industrial</span></div>
+      <div class="legend-row"><span class="swatch" style="background:#f59e0b"></span><span>Agricultural</span></div>
+      <div class="legend-row"><span class="swatch" style="background:#9ca3af"></span><span>Unclassified</span></div>`;
+    leg.appendChild(ov);
+  }
+}
+
+async function loadDetections() {
+  try {
+    const res = await fetch('/api/detections?limit=200');
+    if (!res.ok) throw new Error('detections endpoint failed');
+    const fc = await res.json();
+    renderDetections(fc.features || []);
+  } catch (e) {
+    console.warn('GIS detections overlay unavailable', e);
+  }
+}
+
+function renderDetections(features) {
+  state.detectionsLayer.clearLayers();
+  const use = state.gisVisible ? features : [];
+  use.forEach(f => {
+    const p = f.properties || {};
+    const geo = f.geometry;
+    if (!geo || geo.type !== 'Point') return;
+    const coord = geo.coordinates;
+    const label = p.classification || 'Unclassified';
+    const meta = clsMeta[String(label)] || clsMeta.Unclassified;
+    const m = L.circleMarker([coord[1], coord[0]], {
+      radius: 10,
+      color: '#ffffff',
+      weight: 1.5,
+      fillColor: meta.color,
+      fillOpacity: 0.9,
+      className: 'det-marker',
+    });
+    m.bindPopup(`
+      <div class="popup-title">Classified fire event</div>
+      <div class="popup-line">${meta.emoji} <b>${meta.label}</b> · ${((p.confidence || 0) * 100).toFixed(0)}%</div>
+      <div class="popup-line">📍 ${coord[1].toFixed(4)}, ${coord[0].toFixed(4)}</div>
+      <div class="popup-line">🕐 ${formatIso(p.created_at)}</div>
+      ${p.temperature != null ? `<div class="popup-line">🌡 ${(+p.temperature).toFixed(1)} °C · RH ${p.humidity != null ? (+p.humidity).toFixed(0) + ' %' : '—'}</div>` : ''}
+      ${p.source ? `<div class="popup-line">source: ${p.source}</div>` : ''}
+    `);
+    m.addTo(state.detectionsLayer);
+  });
+}
+
+function formatIso(iso) {
+  try {
+    return new Date(iso).toLocaleString('en-IN', { hour12: false });
+  } catch { return iso || '—'; }
 }
 
 /* ---------------- India boundary ---------------- */
@@ -165,6 +256,8 @@ async function analyzeFire(id, lat, lon, utc) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Prediction failed');
     renderResult(data);
+    if (data.classification) renderClassificationStrip(data.classification);
+    loadDetections();
   } catch (e) {
     openPanel(`<div class="error-box">⚠ ${e.message}</div>`);
   }
@@ -291,6 +384,32 @@ function renderResult(d) {
       }
     });
   }
+}
+
+function renderClassificationStrip(c) {
+  const meta = clsMeta[String(c.classification)] || clsMeta.Unclassified;
+  const host = document.getElementById('panelContent');
+  if (!host) return;
+  const strip = document.createElement('div');
+  strip.className = 'cls-strip';
+  strip.innerHTML = `
+    <div class="cls-main">
+      <span class="cls-emoji">${meta.emoji}</span>
+      <div>
+        <div class="cls-k">Detected fire type (classified)</div>
+        <div class="cls-v">${meta.label} · ${(c.confidence * 100).toFixed(0)}% confidence</div>
+        ${c.saved ? `<div class="cls-saved">✓ saved to GIS storage (PostGIS)</div>` : '<div class="cls-saved off">stored to GIS storage for spatial analysis</div>'}
+      </div>
+    </div>
+    <div class="cls-bars">
+      ${['agricultural', 'forest', 'industrial'].map(k => `
+        <div class="prob-row">
+          <div class="top"><span>${clsMeta[k].emoji} ${clsMeta[k].label}</span><span>${((c.probabilities ? c.probabilities[k] : 0) * 100).toFixed(0)}%</span></div>
+          <div class="prob-track"><div class="prob-fill" style="width:${((c.probabilities ? c.probabilities[k] : 0) * 100).toFixed(0)}%;background:${clsMeta[k].color}"></div></div>
+        </div>`).join('')}
+    </div>`;
+  const verdict = host.querySelector('.verdict');
+  if (verdict) verdict.after(strip);
 }
 
 function weatherCard(k, v) {

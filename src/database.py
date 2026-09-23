@@ -1,9 +1,11 @@
 import os
 import json
 import logging
-from contextlib import contextmanager
+from dotenv import load_dotenv
 import psycopg
 from psycopg.rows import dict_row
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -27,70 +29,157 @@ def get_db_connection():
 
     return psycopg.connect(conninfo, row_factory=dict_row)
 
+def check_postgis_support(conn):
+    """
+    Checks if PostGIS extension is installed or can be installed.
+    Returns True if available and enabled, False otherwise.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'postgis';")
+            if cur.fetchone():
+                return True
+            
+            cur.execute("SELECT 1 FROM pg_available_extensions WHERE name = 'postgis';")
+            if cur.fetchone():
+                try:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
+                    conn.commit()
+                    return True
+                except Exception as ext_err:
+                    conn.rollback()
+                    logger.warning(f"Could not enable PostGIS extension: {ext_err}")
+    except Exception as e:
+        conn.rollback()
+        logger.warning(f"PostGIS capability check encountered an issue: {e}")
+    return False
+
+def has_geometry_column(conn):
+    """
+    Checks if user_fire_detections table has the geom column.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'user_fire_detections' AND column_name = 'geom';
+            """)
+            return cur.fetchone() is not None
+    except Exception:
+        conn.rollback()
+        return False
+
 def init_db():
     """
     Initializes the database schema and extensions.
+    Gracefully falls back to standard coordinates if PostGIS is not installed.
     """
     try:
         with get_db_connection() as conn:
+            has_postgis = check_postgis_support(conn)
+            
             with conn.cursor() as cur:
-                # 1. Ensure PostGIS is installed
-                try:
-                    cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
-                except Exception as e:
-                    logger.warning(f"Could not create postgis extension (ensure you have superuser privileges or PostGIS is installed): {e}")
-
-                # 2. Create the table
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS user_fire_detections (
-                        id SERIAL PRIMARY KEY,
-                        latitude DOUBLE PRECISION NOT NULL,
-                        longitude DOUBLE PRECISION NOT NULL,
-                        geom GEOMETRY(Point, 4326),
-                        scenario VARCHAR(50),
-                        classification VARCHAR(50) NOT NULL,
-                        confidence DOUBLE PRECISION NOT NULL,
-                        temperature DOUBLE PRECISION,
-                        humidity DOUBLE PRECISION,
-                        co2 DOUBLE PRECISION,
-                        pm DOUBLE PRECISION,
-                        source VARCHAR(50) DEFAULT 'user_web',
-                        raw_data JSONB,
-                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
+                if has_postgis:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS user_fire_detections (
+                            id SERIAL PRIMARY KEY,
+                            latitude DOUBLE PRECISION NOT NULL,
+                            longitude DOUBLE PRECISION NOT NULL,
+                            geom GEOMETRY(Point, 4326),
+                            scenario VARCHAR(50),
+                            classification VARCHAR(50) NOT NULL,
+                            confidence DOUBLE PRECISION NOT NULL,
+                            temperature DOUBLE PRECISION,
+                            humidity DOUBLE PRECISION,
+                            co2 DOUBLE PRECISION,
+                            pm DOUBLE PRECISION,
+                            source VARCHAR(50) DEFAULT 'user_web',
+                            raw_data JSONB,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_user_fire_detections_geom 
+                        ON user_fire_detections USING GIST(geom);
+                    """)
+                else:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS user_fire_detections (
+                            id SERIAL PRIMARY KEY,
+                            latitude DOUBLE PRECISION NOT NULL,
+                            longitude DOUBLE PRECISION NOT NULL,
+                            scenario VARCHAR(50),
+                            classification VARCHAR(50) NOT NULL,
+                            confidence DOUBLE PRECISION NOT NULL,
+                            temperature DOUBLE PRECISION,
+                            humidity DOUBLE PRECISION,
+                            co2 DOUBLE PRECISION,
+                            pm DOUBLE PRECISION,
+                            source VARCHAR(50) DEFAULT 'user_web',
+                            raw_data JSONB,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
                 
-                # 3. Create indices
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_user_fire_detections_geom 
-                    ON user_fire_detections USING GIST(geom);
-                """)
                 cur.execute("""
                     CREATE INDEX IF NOT EXISTS idx_user_fire_detections_created_at 
                     ON user_fire_detections (created_at DESC);
                 """)
             conn.commit()
-            logger.info("Database initialized successfully.")
+
+            # If PostGIS is now available but the table was created earlier without geom column, upgrade it
+            if has_postgis and not has_geometry_column(conn):
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            ALTER TABLE user_fire_detections ADD COLUMN IF NOT EXISTS geom GEOMETRY(Point, 4326);
+                            UPDATE user_fire_detections 
+                            SET geom = ST_SetSRID(ST_MakePoint(longitude, latitude), 4326) 
+                            WHERE geom IS NULL;
+                            CREATE INDEX IF NOT EXISTS idx_user_fire_detections_geom 
+                            ON user_fire_detections USING GIST(geom);
+                        """)
+                    conn.commit()
+                    logger.info("Upgraded user_fire_detections with PostGIS geometry column.")
+                except Exception as upgrade_err:
+                    conn.rollback()
+                    logger.warning(f"Could not add PostGIS geom column during upgrade: {upgrade_err}")
+
+            logger.info(f"Database initialized successfully (PostGIS active: {has_postgis}).")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
 
 def save_user_detection(lat, lon, scenario, classification, confidence, temp, hum, co2, pm, source="user_web", raw_data=None):
     """
-    Saves a user detection into the PostGIS database.
+    Saves a user detection into the database (with PostGIS geometry if available).
     """
     try:
         with get_db_connection() as conn:
+            use_geom = has_geometry_column(conn)
             with conn.cursor() as cur:
-                query = """
-                    INSERT INTO user_fire_detections (
-                        latitude, longitude, geom, scenario, classification, confidence,
-                        temperature, humidity, co2, pm, source, raw_data
-                    ) VALUES (
-                        %(lat)s, %(lon)s, ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
-                        %(scenario)s, %(classification)s, %(confidence)s,
-                        %(temp)s, %(hum)s, %(co2)s, %(pm)s, %(source)s, %(raw_data)s
-                    ) RETURNING id, created_at, ST_AsGeoJSON(geom) AS geojson;
-                """
+                if use_geom:
+                    query = """
+                        INSERT INTO user_fire_detections (
+                            latitude, longitude, geom, scenario, classification, confidence,
+                            temperature, humidity, co2, pm, source, raw_data
+                        ) VALUES (
+                            %(lat)s, %(lon)s, ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
+                            %(scenario)s, %(classification)s, %(confidence)s,
+                            %(temp)s, %(hum)s, %(co2)s, %(pm)s, %(source)s, %(raw_data)s
+                        ) RETURNING id, created_at, ST_AsGeoJSON(geom) AS geojson;
+                    """
+                else:
+                    query = """
+                        INSERT INTO user_fire_detections (
+                            latitude, longitude, scenario, classification, confidence,
+                            temperature, humidity, co2, pm, source, raw_data
+                        ) VALUES (
+                            %(lat)s, %(lon)s,
+                            %(scenario)s, %(classification)s, %(confidence)s,
+                            %(temp)s, %(hum)s, %(co2)s, %(pm)s, %(source)s, %(raw_data)s
+                        ) RETURNING id, created_at;
+                    """
+                
                 params = {
                     "lat": lat,
                     "lon": lon,
@@ -107,7 +196,18 @@ def save_user_detection(lat, lon, scenario, classification, confidence, temp, hu
                 cur.execute(query, params)
                 record = cur.fetchone()
             conn.commit()
-            return {"saved": True, "record_id": record["id"], "created_at": str(record["created_at"])}
+            
+            geojson = json.loads(record["geojson"]) if (use_geom and record.get("geojson")) else {
+                "type": "Point",
+                "coordinates": [lon, lat]
+            }
+
+            return {
+                "saved": True, 
+                "record_id": record["id"], 
+                "created_at": str(record["created_at"]),
+                "geojson": geojson
+            }
     except Exception as e:
         logger.error(f"Failed to save detection to database: {e}")
         return {"saved": False, "error": str(e)}
@@ -118,22 +218,40 @@ def get_recent_detections(limit=50):
     """
     try:
         with get_db_connection() as conn:
+            use_geom = has_geometry_column(conn)
             with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT id, latitude, longitude, scenario, classification, 
-                           confidence, temperature, humidity, co2, pm, created_at,
-                           ST_AsGeoJSON(geom) AS geojson
-                    FROM user_fire_detections
-                    ORDER BY created_at DESC
-                    LIMIT %s;
-                """, (limit,))
+                if use_geom:
+                    cur.execute("""
+                        SELECT id, latitude, longitude, scenario, classification, 
+                               confidence, temperature, humidity, co2, pm, created_at,
+                               ST_AsGeoJSON(geom) AS geojson
+                        FROM user_fire_detections
+                        ORDER BY created_at DESC
+                        LIMIT %s;
+                    """, (limit,))
+                else:
+                    cur.execute("""
+                        SELECT id, latitude, longitude, scenario, classification, 
+                               confidence, temperature, humidity, co2, pm, created_at
+                        FROM user_fire_detections
+                        ORDER BY created_at DESC
+                        LIMIT %s;
+                    """, (limit,))
                 rows = cur.fetchall()
                 
                 features = []
                 for row in rows:
+                    if use_geom and row.get("geojson"):
+                        geometry = json.loads(row["geojson"])
+                    else:
+                        geometry = {
+                            "type": "Point",
+                            "coordinates": [row["longitude"], row["latitude"]]
+                        }
+                    
                     features.append({
                         "type": "Feature",
-                        "geometry": json.loads(row["geojson"]) if row.get("geojson") else None,
+                        "geometry": geometry,
                         "properties": {
                             "id": row["id"],
                             "latitude": row["latitude"],

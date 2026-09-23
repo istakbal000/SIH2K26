@@ -24,13 +24,16 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Project specific data and outputs
-data/
 models/
 outputs/
 logs/
 datset/
 kaggle.json
 *.zip
+
+# Ignore large binary map files
+*.osm.pbf
+*.pbf
 
 # OS generated files
 .DS_Store
