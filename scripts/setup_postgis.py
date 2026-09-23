@@ -55,7 +55,7 @@ def test_database():
 
     postgis_ok = check_postgis()
     if not postgis_ok:
-        logger.warning("Proceeding with table initialization, but spatial queries may fail if PostGIS is completely missing.")
+        logger.info("ℹ️ Running in standard PostgreSQL coordinates mode (PostGIS extension optional).")
 
     logger.info("Initializing database schema...")
     init_db()
@@ -75,7 +75,8 @@ def test_database():
     )
     
     if result.get("saved"):
-        logger.info(f"✅ Detection successfully saved to PostGIS! Record ID: {result['record_id']}")
+        mode = "PostGIS spatial index" if postgis_ok else "Standard lat/lon coordinates"
+        logger.info(f"✅ Detection successfully saved to PostgreSQL ({mode})! Record ID: {result['record_id']}")
     else:
         logger.error(f"❌ Failed to save detection: {result.get('error')}")
 
