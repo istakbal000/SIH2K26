@@ -1,0 +1,19 @@
+# Render Blueprint -- GeoFlare (SIH2K26)
+# Deploy: Dashboard -> New -> Blueprint -> this repo (or push to a branch with render.yaml)
+services:
+  - type: web
+    name: geoflare-firepredict
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: FIRMS_MAP_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: GIS_BACKEND
+        value: postgis
+      - key: PYTHONUNBUFFERED
+        value: "1"
