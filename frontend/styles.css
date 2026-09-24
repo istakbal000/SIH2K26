@@ -315,16 +315,6 @@ body {
 .cfg-ok{color:#34d399;background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.35)}
 .cfg-warn{color:#fbbf24;background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35)}
 
-.image-box{background:rgba(255,255,255,.045);border:1px dashed rgba(255,255,255,.25);border-radius:12px;padding:14px;margin-bottom:14px}
-.image-box p{font-size:12.5px;color:#9fb0c9;margin:0 0 10px}
-.image-box input[type=file]{font-size:12px;color:#cbd5e1;margin-bottom:10px;width:100%}
-.img-res{margin-top:10px;font-size:13px}
-.img-res .img-verdict{font-weight:700;font-family:'Rajdhani',sans-serif;font-size:17px;display:block;margin-bottom:4px}
-.img-res .v-fire{color:#ef4444}
-.img-res .v-safe{color:#22c55e}
-.img-res.err{color:#f87171}
-.img-res.ok{color:#cbd5e1}
-
 .det-marker{border:1px solid rgba(255,255,255,.55)}
 
 .cls-strip{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:14px;margin-bottom:14px}
@@ -335,6 +325,24 @@ body {
 .cls-saved{margin-top:5px;font-size:12px;color:#34d399}
 .cls-saved.off{color:#fbbf24}
 .cls-bars{display:flex;flex-direction:column;gap:6px}
+
+.inputs-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:14px}
+.inp-card{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:12px}
+.inp-head{display:flex;gap:9px;align-items:center;margin-bottom:10px}
+.inp-emoji{font-size:20px;line-height:1}
+.inp-t{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:15px}
+.inp-sub{font-size:11px;color:#9fb0c9}
+.inp-rows{display:flex;flex-direction:column;gap:4px}
+.inp-row{display:flex;justify-content:space-between;gap:8px;font-size:12.5px}
+.inp-row .k{color:#9fb0c9}
+.inp-row .v{color:#e2e8f0;text-align:right}
+.inp-bars{display:flex;flex-direction:column;gap:6px}
+.inp-note{font-size:12px;color:#9fb0c9;line-height:1.5}
+.inp-img{width:100%;height:auto;border-radius:8px;border:1px solid rgba(255,255,255,.14);margin-bottom:8px;background:#0b1220}
+.det-card{margin-bottom:14px}
+.det-verdict{margin-top:10px;padding:8px 10px;border-radius:8px;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:14px;text-align:center;border:1px solid transparent}
+.det-verdict.on{color:#34d399;background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.35)}
+.det-verdict.off{color:#fbbf24;background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35)}
 
 
 

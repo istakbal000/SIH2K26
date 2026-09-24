@@ -341,49 +341,84 @@ function renderResult(d) {
 
     <div class="note">● = live weather/sensor value. Other features use the training median of the AI model. Satellite confirms a hotspot; the AI cross-checks it against environmental conditions.</div>
 
-    <div class="section-title" style="cursor:pointer" onclick="document.getElementById('imageBox').hidden = !document.getElementById('imageBox').hidden">
-      Image detection (upload a photo)
-    </div>
-    <div class="image-box" id="imageBox">
-      <p>Upload a fire / satellite image — the backend fuses the environmental model with the image CNN.</p>
-      <input type="file" id="imageInput" accept="image/*">
-      <button class="btn btn-primary" id="imageAnalyzeBtn">Detect fire in image</button>
-      <div id="imageResult"></div>
-    </div>
+    ${renderInputsCards(d.inputs)}
   </div>`;
 
   openPanel(content);
+}
 
-  const imgInput = document.getElementById('imageInput');
-  const imgBtn = document.getElementById('imageAnalyzeBtn');
-  const imgRes = document.getElementById('imageResult');
-  if (imgInput && imgBtn) {
-    imgBtn.addEventListener('click', async () => {
-      const f = imgInput.files[0];
-      if (!f) { imgRes.textContent = '⚠ Pick an image first'; imgRes.className = 'img-res err'; return; }
-      imgRes.textContent = 'Running environmental + image CNN fusion…';
-      imgRes.className = 'img-res';
-      const fd = new FormData();
-      fd.append('image', f);
-      fd.append('lat', d.coordinate.latitude);
-      fd.append('lon', d.coordinate.longitude);
-      if (d.coordinate.utc != null) fd.append('utc', d.coordinate.utc);
-      fd.append('features', JSON.stringify(d.features_used));
-      try {
-        const res = await fetch('/api/predict/fused', { method: 'POST', body: fd });
-        const r = await res.json();
-        if (!res.ok) throw new Error(r.error || 'Fused prediction failed');
-        const fu = r.fused, tab = r.tabular, im = r.image;
-        const emoji = fu.fire_detected ? '🔥' : '🌿';
-        imgRes.innerHTML = `<span class="img-verdict ${fu.fire_detected ? 'v-fire' : 'v-safe'}">${emoji} ${fu.message} (fused ${(fu.confidence * 100).toFixed(1)}%)</span>
-          <div>environmental model: ${tab.message} ${(tab.probability.fire * 100).toFixed(1)}% · image CNN: ${im.message} ${(im.probability.fire * 100).toFixed(1)}%</div>`;
-        imgRes.className = 'img-res ok';
-      } catch (e) {
-        imgRes.textContent = '⚠ ' + e.message;
-        imgRes.className = 'img-res err';
-      }
-    });
+function renderInputsCards(inp) {
+  if (!inp) return '';
+  const firms = inp.firms || {};
+  const osm = inp.osm || {};
+  const sat = inp.satellite || {};
+
+  const inpRow = (k, v) => `<div class="inp-row"><span class="k">${k}</span><span class="v">${v == null || v === '' ? '—' : v}</span></div>`;
+  const inpBar = (label, val, color) =>
+    `<div class="prob-row"><div class="top"><span>${label}</span><span>${(val * 100).toFixed(0)}%</span></div>
+     <div class="prob-track"><div class="prob-fill" style="width:${(val * 100).toFixed(0)}%;background:${color}"></div></div></div>`;
+
+  const ships = firms.satellite ? `${firms.satellite} ${firms.instrument || ''}`.trim() : null;
+  const acq = firms.acq_date ? `${firms.acq_date} ${firms.acq_time || ''}`.trim() : null;
+
+  let cnnHtml = '';
+  if (sat.cnn) {
+    if (sat.cnn.applied && sat.cnn.probabilities) {
+      const p = sat.cnn.probabilities;
+      cnnHtml = `<div class="inp-note">image CNN: fire ${((sat.cnn.fire_prob || 0) * 100).toFixed(0)}% · forest ${((p.forest || 0) * 100).toFixed(0)}% · industrial ${((p.industrial || 0) * 100).toFixed(0)}% · nofire ${((p.nofire || 0) * 100).toFixed(0)}%</div>`;
+    } else if (sat.cnn.note) {
+      cnnHtml = `<div class="inp-note">${sat.cnn.note}</div>`;
+    }
   }
+
+  let detHtml = '';
+  if (inp.detection) {
+    const dt = inp.detection;
+    const v = dt.votes || {};
+    const dbar = (label, val, color) =>
+      `<div class="prob-row"><div class="top"><span>${label}</span><span>${val == null ? '—' : (val * 100).toFixed(0) + '%'}</span></div>
+       <div class="prob-track"><div class="prob-fill" style="width:${val == null ? 0 : (val * 100).toFixed(0)}%;background:${color}"></div></div></div>`;
+    detHtml = `
+    <div class="section-title">Detection fusion</div>
+    <div class="inp-card det-card">
+      <div class="inp-bars">
+        ${dbar('NASA FIRMS + environment', v.tabular && v.tabular.p, '#f97316')}
+        ${dbar('Satellite image CNN', v.image && v.image.p, '#ef4444')}
+        ${dbar('OSM land-use', v.osm && v.osm.p, '#3b82f6')}
+      </div>
+      <div class="det-verdict ${dt.fire_detected ? 'on' : 'off'}">${dt.fire_detected ? '🔥 FIRE DETECTED' : '🌿 NO FIRE'} · fused fire ${((dt.p || 0) * 100).toFixed(0)}%</div>
+    </div>`;
+  }
+
+  return `
+    <div class="section-title">Inputs used</div>
+    <div class="inputs-grid">
+      <div class="inp-card">
+        <div class="inp-head"><span class="inp-emoji">🛰️</span><div><div class="inp-t">NASA FIRMS</div><div class="inp-sub">satellite thermal anomalies</div></div></div>
+        <div class="inp-rows">
+          ${inpRow('Satellite', ships)}
+          ${inpRow('Acquired', acq)}
+          ${inpRow('Hotspots (5 km)', firms.num_hotspots_5km != null ? firms.num_hotspots_5km : '—')}
+          ${inpRow('Brightness', firms.mean_brightness ? firms.mean_brightness + ' K' : null)}
+          ${inpRow('Bright temp t31', firms.max_bright_t31 ? firms.max_bright_t31 + ' K' : null)}
+          ${inpRow('FRP (max)', firms.max_frp ? firms.max_frp + ' MW' : null)}
+          ${inpRow('Acquisition', firms.daynight === 'D' ? 'Day ☀️' : firms.daynight === 'N' ? 'Night 🌙' : null)}
+          ${firms.confidence ? inpRow('Confidence', firms.confidence) : ''}
+        </div>
+      </div>
+      <div class="inp-card">
+        <div class="inp-head"><span class="inp-emoji">🗺️</span><div><div class="inp-t">OSM Land-use</div><div class="inp-sub">OpenStreetMap ${osm.radius_km ? '· ' + osm.radius_km + ' km radius' : ''}</div></div></div>
+        ${osm.applied
+          ? `<div class="inp-bars">${inpBar('Agricultural', osm.agricultural || 0, clsMeta.agricultural.color)}${inpBar('Forest', osm.forest || 0, clsMeta.forest.color)}${inpBar('Industrial', osm.industrial || 0, clsMeta.industrial.color)}</div>`
+          : `<div class="inp-note">${osm.note || 'Not applied'}</div>`}
+      </div>
+      <div class="inp-card">
+        <div class="inp-head"><span class="inp-emoji">🖼️</span><div><div class="inp-t">Satellite image</div><div class="inp-sub">live high-res view</div></div></div>
+        ${sat.image_url ? `<img class="inp-img" src="${sat.image_url}" alt="satellite view" loading="lazy">` : ''}
+        ${cnnHtml}
+      </div>
+    </div>
+    ${detHtml}`;
 }
 
 function renderClassificationStrip(c) {

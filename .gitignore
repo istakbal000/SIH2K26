@@ -31,6 +31,10 @@ datset/
 kaggle.json
 *.zip
 
+# Derived image datasets (rebuilt by src/image_det/prepare_real_data.py from data/raw)
+data/images/
+data/images_type/
+
 # Ignore large binary map files
 *.osm.pbf
 *.pbf

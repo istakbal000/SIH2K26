@@ -17,13 +17,19 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
+import torch
+from PIL import Image
+from torchvision import transforms
+
 import geo_split
+from image_det.model import load_checkpoint as load_image_checkpoint
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 AGRICULTURE_MODEL = BASE_DIR / "data/models/agricultural_fire_random_forest_v2.pkl"
 SHARED_MODEL = BASE_DIR / "models/shared_fire_model.pkl"
+TYPE_MODEL = BASE_DIR / "models/fire_type.pth"
 
 CLASS_ORDER = ("agricultural", "forest", "industrial")
 
@@ -72,6 +78,7 @@ class FireClassifier:
         self._lock = threading.Lock()
         self._agri = None       # (rfc, feature_names)
         self._shared = None     # RandomForest (temp, humidity) -> is_forest
+        self._type = None       # (torch module, class_names, extra) fire-type CNN
         self._loaded = False
 
     def _ensure_loaded(self):
@@ -100,6 +107,16 @@ class FireClassifier:
                     logger.info("FireClassifier: shared forest/industrial model not present (optional)")
             except Exception as e:
                 logger.warning("FireClassifier: shared model failed to load (%s)", e)
+
+            try:
+                if TYPE_MODEL.exists():
+                    model_, names_, extra_ = load_image_checkpoint(TYPE_MODEL)
+                    self._type = (model_, names_, extra_)
+                    logger.info("FireClassifier: fire-type image CNN ready (%s)", names_)
+                else:
+                    logger.info("FireClassifier: fire-type image CNN not present (optional)")
+            except Exception as e:
+                logger.warning("FireClassifier: fire-type image CNN failed to load (%s)", e)
             self._loaded = True
 
     def agriculture_features(self, lat, lon, hotspots, radius_km=5.0):
@@ -147,18 +164,39 @@ class FireClassifier:
         feats["max_track"] = max(_num(f.get("track")) for _, f in near)
         return feats
 
+    def _run_type_cnn(self, path):
+        """Run the forest/industrial/nofire CNN on an image file. Returns a prob dict or None."""
+        if self._type is None:
+            return None
+        model, class_names, extra = self._type
+        img_size = int(extra.get("img_size", 224)) if isinstance(extra, dict) and extra else 224
+        tf = transforms.Compose([
+            transforms.Resize((img_size, img_size)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        with torch.no_grad():
+            logits = model(tf(Image.open(path).convert("RGB")).unsqueeze(0))
+            p = torch.softmax(logits, 1)[0]
+        return {cn: float(p[i]) for i, cn in enumerate(class_names)}
+
     def classify(self, lat, lon, utc, hotspots, weather=None, image=None):
-        """Returns {classification, confidence, probabilities, source, details}."""
+        """Returns {classification, confidence, probabilities, source, details, evidence}."""
         self._ensure_loaded()
         probs = {}
         notes = []
         geo_used = False
+        geo_evidence = None
+        firms_evidence = None
+        image_evidence = None
+        shared_evidence = None
 
         # Agricultural: trained RF on FIRMS cluster statistics (always available).
         if self._agri is not None:
             try:
                 rfc, feats = self._agri
                 row = self.agriculture_features(lat, lon, hotspots or [])
+                firms_evidence = {k: row[k] for k in row}
                 df = pd.DataFrame([{k: row.get(k, 0.0) for k in feats}])[feats]
                 p = float(rfc.predict_proba(df)[0][1])
                 probs["agricultural"] = p
@@ -182,6 +220,7 @@ class FireClassifier:
                     probs["industrial"] = 1 - p
                     notes.append(f"shared_rf={p:.2f} forest (t={temp:.1f}C, rh={hum:.0f}%)")
                     shared_used = True
+                    shared_evidence = {"temp_c": temp, "humidity_pct": hum, "forest": float(p)}
             except Exception as e:
                 logger.warning("FireClassifier: shared model inference failed (%s)", e)
                 notes.append("shared_rf=error")
@@ -202,14 +241,54 @@ class FireClassifier:
                     notes.append("osm_landuse=" + ",".join(
                         f"{k}={v:.2f}" for k, v in geo.items() if k in ("agricultural", "forest", "industrial")))
                     geo_used = True
+                    geo_evidence = {
+                        "agricultural": round(geo["agricultural"] / base, 4),
+                        "forest": round(geo["forest"] / base, 4),
+                        "industrial": round(geo["industrial"] / base, 4),
+                        "radius_km": int(geo.get("radius_km", 3) or 3),
+                    }
                 else:
                     notes.append("osm_landuse=no developed land within 3km")
             else:
                 notes.append("osm_landuse=unavailable")
 
-        if image is not None and isinstance(image, dict) and image.get("fire_detected"):
+        if isinstance(image, (str, Path)):
+            try:
+                t = self._run_type_cnn(image)
+            except Exception as e:
+                t = None
+                logger.warning("FireClassifier: type CNN inference failed (%s)", e)
+            if t:
+                p_photo_fire = 1.0 - float(t.get("nofire", 0.0))
+                image_evidence = {
+                    "applied": True,
+                    "fire_prob": round(p_photo_fire, 4),
+                    "probabilities": {k: round(float(v), 4) for k, v in t.items()},
+                }
+                if p_photo_fire >= 0.5:
+                    f = float(t.get("forest", 0.0))
+                    ind = float(t.get("industrial", 0.0))
+                    fi = f + ind
+                    if fi > 0:
+                        probs.pop("forest", None)
+                        probs.pop("industrial", None)
+                        probs["forest"] = f / fi
+                        probs["industrial"] = ind / fi
+                        notes.append(f"image_type_cnn=fire({p_photo_fire:.2f}) forest={f/fi:.2f} industrial={ind/fi:.2f}")
+                    else:
+                        notes.append(f"image_type_cnn=fire({p_photo_fire:.2f}) no type signal")
+                else:
+                    notes.append(f"image_type_cnn=nofire({p_photo_fire:.2f})")
+        elif image is not None and isinstance(image, dict) and image.get("fire_detected"):
             p = image.get("probability", {}).get("fire", 0.5)
             notes.append(f"image_cnn_fire={p:.2f}")
+
+        evidence = {
+            "firms": firms_evidence,
+            "osm": geo_evidence,
+            "shared": shared_evidence,
+            "image": image_evidence,
+        }
 
         if not probs:
             return {
@@ -218,6 +297,7 @@ class FireClassifier:
                 "probabilities": {k: 0.0 for k in CLASS_ORDER},
                 "source": "none",
                 "details": notes,
+                "evidence": evidence,
             }
 
         total = sum(probs.values())
@@ -232,6 +312,7 @@ class FireClassifier:
             "probabilities": normalized,
             "source": "trained models + OSM land-use" if geo_used else "trained models",
             "details": notes,
+            "evidence": evidence,
         }
 
 

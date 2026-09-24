@@ -1,14 +1,15 @@
-"""Train the fire / no-fire image detection CNN.
+﻿"""Train an image classification CNN on {class} folders (fire/nofire detection, fire type, ...).
 
-Dataset layout (any fire/no-fire image folder is fine):
-    data/images/train/{fire,nofire}/*.jpg
-    data/images/val/{fire,nofire}/*.jpg    (optional)
-    data/images/test/{fire,nofire}/*.jpg   (optional)
+Dataset layout (any class folder set is fine):
+    data/images/train/{class0,class1,...}/*.jpg
+    data/images/val/{class0,class1,...}/*.jpg    (optional)
+    data/images/test/{class0,class1,...}/*.jpg   (optional)
 
 If val/ is missing it is created from the last 15% of train/ (stratified per class).
 
 Usage:
     .venv\\Scripts\\python src\\image_det\\train_image.py --data data/images --epochs 20
+    .venv\\Scripts\\python src\\image_det\\train_image.py --data data/images_type --classes forest industrial nofire --out models/fire_type.pth
 """
 import argparse
 import logging
@@ -31,23 +32,21 @@ logger = logging.getLogger("train_image")
 
 IMG_SIZE = 224
 
-CLASS_FOLDERS = ["fire", "nofire"]
 
-
-def collect_samples(root: Path):
-    """Return {name: [(path, label_idx)...]} using the two class folders present."""
+def collect_samples(root: Path, classes):
+    """Return {name: [(path, label_idx)...]} using the class folders present."""
     if not root.exists():
         raise FileNotFoundError(f"Missing image root: {root}")
-    classes = [d for d in CLASS_FOLDERS if (root / d).is_dir()]
-    if not classes:
-        raise FileNotFoundError(f"No fire/nofire folders under {root}")
+    present = [d for d in classes if (root / d).is_dir()]
+    if not present:
+        raise FileNotFoundError(f"None of {classes} present under {root}")
     samples = {}
-    for label, name in enumerate(classes):
+    for label, name in enumerate(present):
         files = sorted(p for p in (root / name).rglob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
         if not files:
             logger.warning("  class '%s' has 0 images", name)
         samples[name] = [(str(p), label) for p in files]
-    return samples, classes
+    return samples, present
 
 
 def split_train(train_root: Path, samples: dict, classes, val_ratio: float = 0.15):
@@ -56,6 +55,7 @@ def split_train(train_root: Path, samples: dict, classes, val_ratio: float = 0.1
     if val_root.exists() and any((val_root / c).exists() for c in classes):
         return
     import random
+    import shutil
     random.seed(42)
     val_root.mkdir(parents=True, exist_ok=True)
     for name, items in samples.items():
@@ -64,7 +64,6 @@ def split_train(train_root: Path, samples: dict, classes, val_ratio: float = 0.1
         n_val = max(1, int(len(keep) * val_ratio))
         moved = keep[:n_val]
         (val_root / name).mkdir(parents=True, exist_ok=True)
-        import shutil
         for src, _ in moved:
             try:
                 shutil.move(src, val_root / name / Path(src).name)
@@ -88,50 +87,78 @@ class ImageFolder(Dataset):
         return self.transform(img), label
 
 
+def count(items, classes):
+    c = [0] * len(classes)
+    for _, l in items:
+        c[l] += 1
+    return tuple(c)
+
+
+def _class_weights(items, n_classes: int) -> torch.Tensor:
+    counts = [0] * n_classes
+    for _, l in items:
+        counts[l] += 1
+    total = sum(counts)
+    if total == 0 or n_classes < 2:
+        return torch.ones(n_classes)
+    return torch.tensor([total / max(c, 1) for c in counts], dtype=torch.float32)
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Train fire vs no-fire image detection model (binary)")
-    ap.add_argument("--data", type=str, default="data/images", help="Root with train[/val/test]/{fire,nofire}")
+    ap = argparse.ArgumentParser(description="Train an image classification CNN on {class} folders")
+    ap.add_argument("--data", type=str, default="data/images", help="Root with train[/val/test]/{class folders}")
+    ap.add_argument("--classes", nargs="+", default=["fire", "nofire"], help="Class folder names")
+    ap.add_argument("--name", type=str, default="IMAGE", help="Label used in the training log")
     ap.add_argument("--epochs", type=int, default=15)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--size", type=int, default=IMG_SIZE)
     ap.add_argument("--out", type=str, default="models/image_det.pth")
     ap.add_argument("--device", type=str, default="auto")
+    ap.add_argument("--cap", type=int, default=0, help="Cap per-class train samples (0 = no cap, balances imbalanced data)")
     ap.add_argument("--from-checkpoint", type=str, default=None, help="Resume weights (e.g. to fine-tune)")
     args = ap.parse_args()
 
     base = Path(args.data)
     train_root = base / "train"
-    train_samples, classes = collect_samples(train_root)
+    train_samples, classes = collect_samples(train_root, args.classes)
     split_train(train_root, train_samples, classes)
 
     train_items = [it for v in train_samples.values() for it in v]
+    if args.cap and args.cap > 0:
+        import random
+        random.seed(7)
+        by_class = {}
+        for it in train_items:
+            by_class.setdefault(it[1], []).append(it)
+        train_items = []
+        for _label, items in by_class.items():
+            random.shuffle(items)
+            train_items.extend(items[:args.cap])
+        logger.info(" per-class capped at %d samples (total %d)", args.cap, len(train_items))
+
     val_items, test_items = [], []
     val_root, test_root = base / "val", base / "test"
     if val_root.exists():
-        vs, _ = collect_samples(val_root)
+        vs, _ = collect_samples(val_root, args.classes)
         val_items = [it for v in vs.values() for it in v]
     if test_root.exists():
-        ts, _ = collect_samples(test_root)
+        ts, _ = collect_samples(test_root, args.classes)
         test_items = [it for v in ts.values() for it in v]
 
     if not train_items:
-        logger.error("No training images found. Put images in data/images/train/{fire,nofire}.")
+        logger.error("No training images found under %s.", train_root)
         sys.exit(1)
 
-    def count(items, name=""):
-        n = sum(1 for _, l in items if l == 0), sum(1 for _, l in items if l == 1)
-        return n
-
     logger.info("=" * 60)
-    logger.info(" FIRE DETECTION (IMAGE) TRAINING")
+    logger.info(" %s TRAINING", args.name)
     logger.info("=" * 60)
     logger.info(" classes: %s", classes)
-    logger.info(" train:  %d images  %s", len(train_items), count(train_items))
+    logger.info(" train:  %d images  by-class=%s", len(train_items), count(train_items, classes))
     if val_items:
-        logger.info(" val:    %d images  %s", len(val_items), count(val_items))
+        logger.info(" val:    %d images  by-class=%s", len(val_items), count(val_items, classes))
     if test_items:
-        logger.info(" test:   %d images  %s", len(test_items), count(test_items))
+        logger.info(" test:   %d images  by-class=%s", len(test_items), count(test_items, classes))
 
     device = args.device
     if device == "auto":
@@ -163,7 +190,7 @@ def main():
         logger.info(" resumed from %s", args.from_checkpoint)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=_class_weights(train_items, len(classes)).to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     best_acc, best_state = -1.0, None
@@ -220,7 +247,7 @@ def main():
     if test_items and (test_loader := DataLoader(ImageFolder(test_items, eval_tf), batch_size=args.batch_size)):
         model.load_state_dict(best_state)
         model.eval()
-        from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+        from sklearn.metrics import classification_report, confusion_matrix
         ys, preds = [], []
         with torch.no_grad():
             for x, y in test_loader:

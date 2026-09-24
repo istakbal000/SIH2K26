@@ -2,11 +2,15 @@ import os
 import sys
 import json
 import time
+import math
 import threading
 import random
 import logging
+import tempfile
 from pathlib import Path
 from functools import lru_cache
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -101,7 +105,7 @@ def db() -> "module or None":
         return None
 
 
-def classify_and_persist(lat: float, lon: float, utc, weather_result: dict, fire: bool, source: str = "map_analyze"):
+def classify_and_persist(lat: float, lon: float, utc, weather_result: dict, fire: bool, source: str = "map_analyze", image_path=None, cls=None):
     """Run fire-type classification and store the event in PostGIS when a fire is detected.
 
     Returns a dict with 'classification' (and optionally 'saved'), or None when no fire
@@ -111,8 +115,9 @@ def classify_and_persist(lat: float, lon: float, utc, weather_result: dict, fire
         return None
 
     hotspots = _fires_cache.get("data") or []
-    classifier = get_classifier()
-    cls = classifier.classify(lat, lon, utc, hotspots, weather=(weather_result or {}).get("weather"))
+    if cls is None:
+        classifier = get_classifier()
+        cls = classifier.classify(lat, lon, utc, hotspots, weather=(weather_result or {}).get("weather"), image=image_path)
     event = {
         "classification": cls["classification"],
         "confidence": cls["confidence"],
@@ -120,6 +125,7 @@ def classify_and_persist(lat: float, lon: float, utc, weather_result: dict, fire
         "class_meta": class_meta(cls["classification"]),
         "source": cls["source"],
         "details": cls["details"],
+        "evidence": cls.get("evidence"),
     }
 
     dbmod = db()
@@ -244,6 +250,152 @@ def assemble_features(lat: float, lon: float, utc, supplied: dict) -> tuple:
     return features, weather_result
 
 
+def _hav_km(alat, alon, blat, blon):
+    import math
+    R = 6371.0
+    p1, p2 = math.radians(alat), math.radians(blat)
+    dp = math.radians(blat - alat)
+    dl = math.radians(blon - alon)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _r3(x):
+    try:
+        if x is None or x == "":
+            return None
+        return round(float(x), 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def _satellite_image_url(lat, lon, pad=0.02, size="460,320"):
+    xmin, xmax = round(lon - pad, 5), round(lon + pad, 5)
+    ymin, ymax = round(lat - pad, 5), round(lat + pad, 5)
+    return (f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
+            f"?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=4326&imageSR=4326&size={size}&format=jpg&f=image")
+
+
+def _fetch_satellite_tile(lat, lon, pad=0.02, size="320,240", timeout=10):
+    """Download Esri World Imagery tile to a temp file. Returns (path, url) or (None, url)."""
+    xmin, xmax = round(lon - pad, 5), round(lon + pad, 5)
+    ymin, ymax = round(lat - pad, 5), round(lat + pad, 5)
+    url = (f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
+           f"?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=4326&imageSR=4326&size={size}&format=jpg&f=image")
+    try:
+        req = Request(url, headers={"User-Agent": "SIH2K26-FirePredict/1.0"})
+        with urlopen(req, timeout=timeout) as r:
+            data = r.read()
+        fd, p = tempfile.mkstemp(prefix="sat_", suffix=".jpg")
+        os.close(fd)
+        with open(p, "wb") as f:
+            f.write(data)
+        return p, url
+    except Exception as e:
+        logger.warning("Auto satellite fetch failed for (%.3f,%.3f): %s", lat, lon, e)
+        return None, url
+
+
+def _build_inputs(lat: float, lon: float, classification, detection=None):
+    """Assemble the three input sources (NASA FIRMS, OSM land-use, satellite imagery) used by the result."""
+    hotspots = _fires_cache.get("data") or []
+    ev = (classification or {}).get("evidence") or {}
+    firms_stats = ev.get("firms")
+    if not firms_stats:
+        try:
+            firms_stats = get_classifier().agriculture_features(lat, lon, hotspots)
+        except Exception:
+            firms_stats = {}
+
+    nearest = None
+    best = float("inf")
+    for h in hotspots or []:
+        try:
+            d = _hav_km(lat, lon, float(h["latitude"]), float(h["longitude"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d < best:
+            best, nearest = d, h
+
+    firms = {
+        "source": "NASA FIRMS (VIIRS)",
+        "satellite": (nearest or {}).get("satellite"),
+        "instrument": (nearest or {}).get("instrument"),
+        "acq_date": (nearest or {}).get("acq_date"),
+        "acq_time": (nearest or {}).get("acq_time"),
+        "daynight": (nearest or {}).get("daynight"),
+        "confidence": (nearest or {}).get("confidence"),
+        "num_hotspots_5km": firms_stats.get("num_hotspots"),
+        "mean_brightness": _r3(firms_stats.get("mean_brightness")),
+        "max_brightness": _r3(firms_stats.get("max_brightness")),
+        "mean_bright_t31": _r3(firms_stats.get("mean_bright_t31")),
+        "max_bright_t31": _r3(firms_stats.get("max_bright_t31")),
+        "mean_frp": _r3(firms_stats.get("mean_frp")),
+        "max_frp": _r3(firms_stats.get("max_frp")),
+        "min_distance_km": _r3(firms_stats.get("min_distance_km")),
+    }
+
+    geo = ev.get("osm")
+    if geo:
+        otp = {"source": "OpenStreetMap land-use", "applied": True,
+               "agricultural": geo.get("agricultural"), "forest": geo.get("forest"),
+               "industrial": geo.get("industrial"), "radius_km": geo.get("radius_km", 3)}
+    elif classification:
+        otp = {"source": "OpenStreetMap land-use", "applied": False, "note": "not used for this fire type"}
+    else:
+        otp = {"source": "OpenStreetMap land-use", "applied": False, "note": "not probed (no fire detected)"}
+
+    img = ev.get("image")
+    if img and img.get("applied"):
+        cnn = {"applied": True, "fire_prob": img.get("fire_prob"),
+               "probabilities": img.get("probabilities")}
+    elif img and img.get("note"):
+        cnn = {"applied": False, "note": img.get("note")}
+    else:
+        cnn = {"applied": False, "note": "no satellite image analysed"}
+    sat = {"source": "Satellite imagery", "image_url": _satellite_image_url(lat, lon), "cnn": cnn}
+
+    return {"firms": firms, "osm": otp, "satellite": sat, "detection": detection}
+
+
+def _fuse_detection(tab_fire, img_fire, osm_fire, w_tab=0.5, w_img=0.35, w_osm=0.15):
+    """Blend the three input sources into one fire/no-fire verdict.
+
+    tab_fire  : FIRMS hotspots + environment (tabular RF)
+    img_fire  : satellite image CNN fire probability (None when unavailable)
+    osm_fire  : flammable land-use share from OSM (None when unavailable)
+    """
+    votes = {}
+    acc, wsum, used = 0.0, 0.0, {"tabular": True, "image": img_fire is not None, "osm": osm_fire is not None}
+    votes["tabular"] = {"p": round(tab_fire, 4), "source": "NASA FIRMS hotspots + environment (RF)"}
+    acc += w_tab * tab_fire
+    wsum += w_tab
+    if used["image"]:
+        votes["image"] = {"p": round(img_fire, 4), "source": "satellite image CNN"}
+        acc += w_img * img_fire
+        wsum += w_img
+    else:
+        votes["image"] = {"p": None, "source": "satellite image CNN"}
+    if used["osm"]:
+        votes["osm"] = {"p": round(osm_fire, 4), "source": "OSM land-use signal"}
+        acc += w_osm * osm_fire
+        wsum += w_osm
+    else:
+        votes["osm"] = {"p": None, "source": "OSM land-use signal"}
+    p = (acc / wsum) if wsum > 0 else tab_fire
+    fire = bool(p >= 0.5)
+    return {
+        "p": round(p, 4),
+        "fire_detected": fire,
+        "confidence": round(p if fire else 1 - p, 4),
+        "probability": {"no_fire": round(1 - p, 4), "fire": round(p, 4)},
+        "message": "FIRE DETECTED" if fire else "NO FIRE",
+        "prediction": 1 if fire else 0,
+        "votes": votes,
+        "weights": {k: (w_tab if k == "tabular" else w_img if k == "image" else w_osm) if used[k] else 0.0 for k in used},
+    }
+
+
 @app.route("/api/predict", methods=["POST"])
 def predict():
     body = request.get_json(silent=True) or {}
@@ -275,24 +427,64 @@ def predict():
     logger.info("  [done]   reply sent to map UI")
     logger.info("-" * 62)
 
+    sat_path, _sat_url = _fetch_satellite_tile(lat, lon)
+    if sat_path:
+        logger.info("  [sat]   auto-fetched satellite tile -> running image CNN")
+
+    cls = None
+    try:
+        classifier = get_classifier()
+        cls = classifier.classify(lat, lon, features.get("UTC") or utc, _fires_cache.get("data") or [],
+                                  weather=(weather_result or {}).get("weather"), image=sat_path)
+    except Exception as e:
+        logger.warning("  [classify] classification failed (%s)", e)
+
+    if sat_path:
+        try:
+            os.remove(sat_path)
+        except OSError:
+            pass
+
+    fire_ev = (cls or {}).get("evidence") or {}
+    img_fire = None
+    _img_ev = fire_ev.get("image")
+    if _img_ev and _img_ev.get("applied"):
+        img_fire = float(_img_ev.get("fire_prob"))
+    osm_fire = None
+    _geo_ev = fire_ev.get("osm")
+    if _geo_ev:
+        osm_fire = min(1.0, float(_geo_ev.get("forest") or 0) + float(_geo_ev.get("agricultural") or 0)
+                       + float(_geo_ev.get("industrial") or 0))
+
+    det = _fuse_detection(float(result["probability"]["fire"]), img_fire, osm_fire)
+    logger.info("  [fuse]   detection votes -> %s = %.2f",
+                {k: (v["p"] if v.get("p") is not None else None) for k, v in det["votes"].items()}, det["p"])
+    logger.info("  [fuse]   verdict -> %s (confidence %.1f%%)", det["message"], det["confidence"] * 100)
+    logger.info("  [done]   reply sent to map UI")
+    logger.info("-" * 62)
+
     classification = classify_and_persist(lat, lon, features.get("UTC"), weather_result,
-                                          fire=result["fire_detected"], source="map_analyze")
+                                          fire=det["fire_detected"], source="map_analyze",
+                                          cls=cls)
     if classification:
         logger.info("  [classify] detected fire type -> %s (%.1f%%)  %s",
                     classification["classification"], classification["confidence"] * 100,
                     classification.get("saved", {}).get("saved") and "saved to GIS" or "")
 
     return jsonify({
-        "fire_detected": result["fire_detected"],
-        "prediction": result["prediction"],
-        "confidence": result["confidence"],
-        "probability": result["probability"],
-        "message": result["message"],
+        "fire_detected": det["fire_detected"],
+        "prediction": det["prediction"],
+        "confidence": det["confidence"],
+        "probability": det["probability"],
+        "message": det["message"],
         "coordinate": {"latitude": lat, "longitude": lon, "utc": features.get("UTC")},
         "weather": weather_result["weather"],
         "air_quality": weather_result["air_quality"],
         "features_used": result["input_features"],
-        "classification": classification,
+        "classification": classification if det["fire_detected"] else None,
+        "inputs": _build_inputs(lat, lon,
+                                classification if det["fire_detected"] else {"evidence": (cls or {}).get("evidence")},
+                                detection=det),
     })
 
 
@@ -349,6 +541,25 @@ def run_image_predict(file):
         },
         "message": "FIRE DETECTED" if fire else "NO FIRE",
     }
+
+
+def _save_temp_upload(file, suffix=".jpg"):
+    """Persist an uploaded image to a temp file (rewinds the stream first). Returns path or None."""
+    import tempfile
+    try:
+        stream = getattr(file, "stream", None)
+        if stream is not None:
+            try:
+                stream.seek(0)
+            except Exception:
+                pass
+        data = file.read() if hasattr(file, "read") else stream.read()
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            return tmp.name
+    except Exception as e:
+        logger.warning("Could not store uploaded image for classification (%s)", e)
+        return None
 
 
 @app.route("/api/image/predict", methods=["POST"])
@@ -414,15 +625,25 @@ def predict_fused():
                 fused["probability"]["fire"])
     logger.info("  [done]   fused verdict -> %s (%.1f%%)", fused["message"], fused["confidence"] * 100)
 
-    classification = classify_and_persist(lat, lon, features.get("UTC"), weather_result,
-                                          fire=fused["fire_detected"], source="map_analyze_fused")
-    if classification:
-        logger.info("  [classify] detected fire type -> %s (%.1f%%)  %s",
-                    classification["classification"], classification["confidence"] * 100,
-                    classification.get("saved", {}).get("saved") and "saved to GIS" or "")
+    img_tmp = _save_temp_upload(request.files["image"])
+    try:
+        classification = classify_and_persist(lat, lon, features.get("UTC"), weather_result,
+                                              fire=fused["fire_detected"], source="map_analyze_fused",
+                                              image_path=img_tmp)
+        if classification:
+            logger.info("  [classify] detected fire type -> %s (%.1f%%)  %s",
+                        classification["classification"], classification["confidence"] * 100,
+                        classification.get("saved", {}).get("saved") and "saved to GIS" or "")
+    finally:
+        if img_tmp:
+            try:
+                os.remove(img_tmp)
+            except OSError:
+                pass
     logger.info("-" * 62)
 
-    return jsonify({"tabular": tabular, "image": image, "fused": fused, "classification": classification})
+    return jsonify({"tabular": tabular, "image": image, "fused": fused, "classification": classification,
+                    "inputs": _build_inputs(lat, lon, classification)})
 
 
 @app.route("/api/detections")
