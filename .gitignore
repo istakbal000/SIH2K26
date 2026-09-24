@@ -35,6 +35,9 @@ kaggle.json
 data/images/
 data/images_type/
 
+# Local GIS store (runtime detections overlay)
+data/gis/
+
 # Ignore large binary map files
 *.osm.pbf
 *.pbf

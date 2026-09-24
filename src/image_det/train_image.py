@@ -94,14 +94,38 @@ def count(items, classes):
     return tuple(c)
 
 
-def _class_weights(items, n_classes: int) -> torch.Tensor:
+def _class_weights(items, n_classes: int, boost=None) -> torch.Tensor:
     counts = [0] * n_classes
     for _, l in items:
         counts[l] += 1
     total = sum(counts)
     if total == 0 or n_classes < 2:
         return torch.ones(n_classes)
-    return torch.tensor([total / max(c, 1) for c in counts], dtype=torch.float32)
+    w = torch.tensor([total / max(c, 1) for c in counts], dtype=torch.float32)
+    if boost:
+        for idx, mul in boost.items():
+            if 0 <= idx < n_classes:
+                w[idx] = w[idx] * mul
+    return w
+
+
+def parse_boost(specs, classes):
+    """Parse ['class:factor', ...] into {class_index: multiplier}."""
+    if not specs:
+        return {}
+    out = {}
+    for s in specs:
+        try:
+            name, mul = s.split(":", 1)
+            mul = float(mul)
+        except (ValueError, TypeError):
+            logger.warning("ignoring malformed boost spec '%s'", s)
+            continue
+        if name not in classes:
+            logger.warning("boost class '%s' not in %s — ignored", name, classes)
+            continue
+        out[classes.index(name)] = mul
+    return out
 
 
 def main():
@@ -116,6 +140,8 @@ def main():
     ap.add_argument("--out", type=str, default="models/image_det.pth")
     ap.add_argument("--device", type=str, default="auto")
     ap.add_argument("--cap", type=int, default=0, help="Cap per-class train samples (0 = no cap, balances imbalanced data)")
+    ap.add_argument("--boost", nargs="*", default=None,
+                    help="Per-class loss-weight multipliers, e.g. --boost industrial:2.5 forest:1.2")
     ap.add_argument("--from-checkpoint", type=str, default=None, help="Resume weights (e.g. to fine-tune)")
     args = ap.parse_args()
 
@@ -190,7 +216,11 @@ def main():
         logger.info(" resumed from %s", args.from_checkpoint)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss(weight=_class_weights(train_items, len(classes)).to(device))
+    boost = parse_boost(args.boost, classes)
+    wts = _class_weights(train_items, len(classes), boost)
+    logger.info(" class loss weights = %s%s", ", ".join(f"{c}={wts[i]:.2f}" for i, c in enumerate(classes)),
+                f"  (boost {boost})" if boost else "")
+    criterion = nn.CrossEntropyLoss(weight=wts.to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     best_acc, best_state = -1.0, None

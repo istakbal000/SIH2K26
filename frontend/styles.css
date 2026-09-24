@@ -146,7 +146,7 @@ body {
 /* ---------- Result panel ---------- */
 .result-panel {
   position: absolute;
-  top: 75px; right: 16px;
+  top: 75px; left: 16px;
   width: 380px;
   max-height: calc(100% - 140px);
   overflow-y: auto;
@@ -160,7 +160,7 @@ body {
   transition: transform 0.3s ease;
   scrollbar-width: thin;
 }
-.result-panel.closed { transform: translateX(140%); }
+.result-panel.closed { transform: translateX(-140%); }
 
 .panel-handle {
   position: absolute;
@@ -284,6 +284,39 @@ body {
 .field a { color: var(--accent); }
 .modal-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 
+/* ---------- Detection database modal ---------- */
+.db-modal { width: min(820px, 94vw); }
+.db-badge {
+  display: inline-flex; align-items: center; padding: 2px 10px;
+  margin-left: 8px; font-size: 12px; font-weight: 600;
+  background: var(--panel-2); border: 1px solid var(--accent);
+  color: var(--accent); border-radius: 999px;
+}
+.db-meta { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.db-actions { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.db-scroll {
+  max-height: 60vh; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.db-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.db-table th, .db-table td {
+  text-align: left; padding: 8px 12px; white-space: nowrap;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+}
+.db-table th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--panel-2); color: var(--muted);
+  font-family: 'Rajdhani', sans-serif; font-size: 13px; letter-spacing: .03em;
+}
+.db-table tbody tr:hover { background: rgba(99,144,255,.06); }
+.db-table td:first-child { color: var(--muted); }
+.cls-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: 999px;
+  border: 1px solid; font-size: 11.5px; font-weight: 700;
+}
+.db-empty { text-align: center; color: var(--muted); padding: 28px 12px; white-space: normal; }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;
@@ -343,6 +376,50 @@ body {
 .det-verdict{margin-top:10px;padding:8px 10px;border-radius:8px;font-family:'Rajdhani',sans-serif;font-weight:700;font-size:14px;text-align:center;border:1px solid transparent}
 .det-verdict.on{color:#34d399;background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.35)}
 .det-verdict.off{color:#fbbf24;background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.35)}
+
+/* ---------- Classified event detail drawer ---------- */
+.detail-drawer {
+  position: fixed; top: 76px; right: 16px; bottom: 24px;
+  width: min(360px, 92vw);
+  background: linear-gradient(180deg, var(--panel), #0d1628);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 950; display: flex; flex-direction: column;
+  transform: translateX(calc(100% + 40px));
+  transition: transform 0.3s ease;
+  overflow: hidden;
+}
+.detail-drawer.open { transform: translateX(0); }
+.drawer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px 8px;
+}
+.drawer-head h2 { font-family: 'Rajdhani', sans-serif; font-size: 19px; margin: 0; }
+.drawer-close { padding: 2px 10px; font-size: 18px; }
+.drawer-scroll { flex: 1; overflow-y: auto; padding: 6px 18px 20px; }
+.drawer-hero {
+  display: flex; align-items: center; gap: 12px;
+  border: 1px solid; border-radius: 12px;
+  padding: 12px 14px; margin-bottom: 14px;
+  background: var(--panel-2);
+}
+.drawer-emoji { font-size: 30px; line-height: 1; }
+.drawer-k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.drawer-v { font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 21px; margin-top: 1px; }
+.drawer-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.drawer-section {
+  font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
+  margin: 16px 0 8px;
+}
+.drawer-sources { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.drawer-src { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.drawer-zoom { width: 100%; margin-top: 16px; }
+.ev-d-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; }
+.ev-d-grid div { display: flex; flex-direction: column; min-width: 0; }
+.ev-d-grid span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.ev-d-grid b { font-size: 12.5px; overflow-wrap: anywhere; }
 
 
 

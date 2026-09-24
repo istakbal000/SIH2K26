@@ -12,12 +12,13 @@ const state = {
   markers: [],
   refreshTimer: null,
   currentFire: null,
+  detMarkers: {},
   serverConfig: null,
 };
 
 const clsMeta = {
-  agricultural: { color: '#f59e0b', emoji: '🌾', label: 'Agricultural' },
-  forest:       { color: '#16a34a', emoji: '🌲', label: 'Forest' },
+  agricultural: { color: '#eab308', emoji: '🌾', label: 'Agricultural' },
+  forest:       { color: '#f97316', emoji: '🌲', label: 'Forest' },
   industrial:   { color: '#dc2626', emoji: '🏭', label: 'Industrial' },
   Unclassified: { color: '#9ca3af', emoji: '❔', label: 'Unclassified' },
 };
@@ -27,8 +28,17 @@ const els = {
   statusText: document.getElementById('statusText'),
   firesCount: document.getElementById('firesCount'),
   btnRefresh: document.getElementById('btnRefresh'),
+  btnDatabase: document.getElementById('btnDatabase'),
   btnSettings: document.getElementById('btnSettings'),
+  detailDrawer: document.getElementById('detailDrawer'),
+  drawerContent: document.getElementById('drawerContent'),
+  drawerClose: document.getElementById('drawerClose'),
   settingsModal: document.getElementById('settingsModal'),
+  dbModal: document.getElementById('dbModal'),
+  dbCount: document.getElementById('dbCount'),
+  dbMeta: document.getElementById('dbMeta'),
+  dbBody: document.getElementById('dbBody'),
+  btnDbRefresh: document.getElementById('btnDbRefresh'),
   dataSource: document.getElementById('dataSource'),
   serverConfigNote: document.getElementById('serverConfigNote'),
   resultPanel: document.getElementById('resultPanel'),
@@ -70,6 +80,8 @@ function initMap() {
     }),
   };
   state.baseLayers.satellite.addTo(state.map);
+  state.map.zoomControl.setPosition('bottomright');
+  state.map.zoomControl.getContainer().className += ' map-zoom-br';
 
   state.firesLayer = L.layerGroup().addTo(state.map);
   state.detectionsLayer = L.layerGroup().addTo(state.map);
@@ -99,9 +111,9 @@ function buildStackUI() {
     ov.id = 'detOverlay';
     ov.innerHTML = `
       <div class="legend-title" style="margin-top:8px;border-top:1px solid rgba(255,255,255,.14);padding-top:8px">Classified detections (GIS· PostGIS)</div>
-      <div class="legend-row"><span class="swatch" style="background:#16a34a"></span><span>Forest</span></div>
+      <div class="legend-row"><span class="swatch" style="background:#f97316"></span><span>Forest</span></div>
       <div class="legend-row"><span class="swatch" style="background:#dc2626"></span><span>Industrial</span></div>
-      <div class="legend-row"><span class="swatch" style="background:#f59e0b"></span><span>Agricultural</span></div>
+      <div class="legend-row"><span class="swatch" style="background:#eab308"></span><span>Agricultural</span></div>
       <div class="legend-row"><span class="swatch" style="background:#9ca3af"></span><span>Unclassified</span></div>`;
     leg.appendChild(ov);
   }
@@ -136,14 +148,18 @@ function renderDetections(features) {
       fillOpacity: 0.9,
       className: 'det-marker',
     });
+    if (p.id != null) state.detMarkers[p.id] = m;
     m.bindPopup(`
-      <div class="popup-title">Classified fire event</div>
-      <div class="popup-line">${meta.emoji} <b>${meta.label}</b> · ${((p.confidence || 0) * 100).toFixed(0)}%</div>
+      <div class="popup-title">Classified fire event${p.id != null ? ' · #' + p.id : ''}</div>
+      <div class="popup-line">${meta.emoji} <b>${meta.label}</b> fire · ${((p.confidence || 0) * 100).toFixed(0)}% conf</div>
       <div class="popup-line">📍 ${coord[1].toFixed(4)}, ${coord[0].toFixed(4)}</div>
       <div class="popup-line">🕐 ${formatIso(p.created_at)}</div>
       ${p.temperature != null ? `<div class="popup-line">🌡 ${(+p.temperature).toFixed(1)} °C · RH ${p.humidity != null ? (+p.humidity).toFixed(0) + ' %' : '—'}</div>` : ''}
-      ${p.source ? `<div class="popup-line">source: ${p.source}</div>` : ''}
+      ${p.co2 != null ? `<div class="popup-line">🫁 CO₂ ${(+p.co2).toFixed(0)} ppm · PM2.5 ${p.pm != null ? (+p.pm).toFixed(1) : '—'} µg/m³</div>` : ''}
+      ${p.scenario ? `<div class="popup-line">🏷 scenario: ${p.scenario}</div>` : ''}
+      <div class="popup-line">🗄 stored in PostGIS</div>
     `);
+    m.on('click', () => openEventDrawer(f));
     m.addTo(state.detectionsLayer);
   });
 }
@@ -152,6 +168,46 @@ function formatIso(iso) {
   try {
     return new Date(iso).toLocaleString('en-IN', { hour12: false });
   } catch { return iso || '—'; }
+}
+
+/* ---------------- classified event detail drawer ---------------- */
+
+function openEventDrawer(f) {
+  const p = (f && f.properties) || {};
+  const meta = clsMeta[String(p.classification)] || clsMeta.Unclassified;
+  const lat = +p.latitude, lon = +p.longitude;
+  const conf = p.confidence != null ? (p.confidence * 100).toFixed(0) : '—';
+  els.drawerContent.innerHTML = `
+    <div class="drawer-hero" style="border-color:${meta.color}">
+      <span class="drawer-emoji">${meta.emoji}</span>
+      <div>
+        <div class="drawer-k">Detected fire type</div>
+        <div class="drawer-v">${meta.label} fire</div>
+        <div class="drawer-sub">#${p.id != null ? p.id : '—'} · confidence ${conf}%</div>
+      </div>
+    </div>
+    <div class="drawer-section">Measurements</div>
+    <div class="ev-d-grid">
+      <div><span>Coordinates</span><b>${lat.toFixed(5)}, ${lon.toFixed(5)}</b></div>
+      <div><span>Detected</span><b>${formatIso(p.created_at)}</b></div>
+      <div><span>Temperature</span><b>${p.temperature != null ? (+p.temperature).toFixed(1) + ' °C' : '—'}</b></div>
+      <div><span>Humidity</span><b>${p.humidity != null ? +p.humidity + ' %' : '—'}</b></div>
+      <div><span>CO₂</span><b>${p.co2 != null ? (+p.co2).toFixed(0) + ' ppm' : '—'}</b></div>
+      <div><span>PM2.5</span><b>${p.pm != null ? (+p.pm).toFixed(1) + ' µg/m³' : '—'}</b></div>
+      ${p.scenario ? `<div><span>Scenario</span><b>${p.scenario}</b></div>` : ''}
+      <div><span>Storage</span><b>PostGIS (geom 4326)</b></div>
+    </div>
+    <div class="drawer-section">Sources</div>
+    <div class="drawer-sources">
+      <div class="drawer-src"><span class="swatch" style="background:${meta.color}"></span><span>Classified by fused AI (NASA FIRMS + OSM + satellite CNN)</span></div>
+    </div>
+    <button class="btn btn-primary drawer-zoom" data-lat="${lat}" data-lon="${lon}">📌 Zoom to location on map</button>
+  `;
+  els.detailDrawer.classList.add('open');
+}
+
+function closeEventDrawer() {
+  els.detailDrawer.classList.remove('open');
 }
 
 /* ---------------- India boundary ---------------- */
@@ -461,6 +517,52 @@ function getLiveFeatureKeys(features) {
   return live;
 }
 
+/* ---------------- detection database modal ---------------- */
+
+async function openDatabaseUI() {
+  els.dbModal.hidden = false;
+  await loadDatabase();
+}
+
+async function loadDatabase() {
+  els.dbMeta.textContent = 'loading…';
+  try {
+    const res = await fetch('/api/detections?limit=200');
+    if (!res.ok) throw new Error('detections endpoint failed');
+    const fc = await res.json();
+    const feats = fc.features || [];
+    els.dbCount.textContent = feats.length;
+    els.dbMeta.textContent = `PostGIS · postgres → user_fire_detections · ${feats.length} record${feats.length === 1 ? '' : 's'}`;
+    renderDbRows(feats);
+  } catch (e) {
+    els.dbMeta.textContent = '⚠ ' + e.message;
+    els.dbCount.textContent = '0';
+    els.dbBody.innerHTML = '<tr><td colspan="6" class="db-empty">Could not reach the database</td></tr>';
+  }
+}
+
+function renderDbRows(feats) {
+  if (!feats.length) {
+    els.dbBody.innerHTML = '<tr><td colspan="6" class="db-empty">No detections stored yet — run an AI analysis on a fire hotspot</td></tr>';
+    return;
+  }
+  els.dbBody.innerHTML = feats.map(f => {
+    const p = f.properties || {};
+    const meta = clsMeta[String(p.classification)] || clsMeta.Unclassified;
+    const conf = p.confidence != null ? (p.confidence * 100).toFixed(0) + ' %' : '—';
+    const temp = p.temperature != null ? (+p.temperature).toFixed(1) + ' °C' : '—';
+    const pm = p.pm != null ? +p.pm : null;
+    return `<tr>
+      <td>#${p.id}</td>
+      <td><span class="cls-chip" style="color:${meta.color};border-color:${meta.color}">${meta.emoji} ${meta.label}</span></td>
+      <td>${conf}</td>
+      <td>${(+p.latitude).toFixed(4)}, ${(+p.longitude).toFixed(4)}</td>
+      <td>${temp} · PM2.5 ${pm || '—'}</td>
+      <td>${formatIso(p.created_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
 /* ---------------- panel & UI helpers ---------------- */
 
 function openPanel(html) {
@@ -546,6 +648,18 @@ function bindEvents() {
   els.btnRefresh.addEventListener('click', refreshFires);
   els.btnSettings.addEventListener('click', () => { els.settingsModal.hidden = false; });
   els.panelClose.addEventListener('click', closePanel);
+  els.btnDatabase.addEventListener('click', openDatabaseUI);
+  els.btnDbRefresh.addEventListener('click', loadDatabase);
+  els.drawerClose.addEventListener('click', closeEventDrawer);
+  els.drawerContent.addEventListener('click', (e) => {
+    const zoom = e.target.closest('.drawer-zoom');
+    if (zoom) state.map.setView([+zoom.dataset.lat, +zoom.dataset.lon], 12);
+  });
+  els.dbModal.querySelectorAll('[data-db-close]').forEach(b =>
+    b.addEventListener('click', () => els.dbModal.hidden = true));
+  els.dbModal.addEventListener('click', (e) => {
+    if (e.target === els.dbModal) els.dbModal.hidden = true;
+  });
   els.settingsModal.querySelectorAll('[data-close]').forEach(b =>
     b.addEventListener('click', () => els.settingsModal.hidden = true));
   els.settingsModal.addEventListener('click', (e) => {

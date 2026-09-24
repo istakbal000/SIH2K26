@@ -28,11 +28,21 @@
     </div>
     <div class="stats-chip" id="firesCount" title="Active thermal anomalies">0 anomalies</div>
     <button class="btn btn-ghost" id="btnRefresh" title="Refresh FIRMS data">⟳ Refresh</button>
+    <button class="btn btn-ghost" id="btnDatabase" title="View stored detections (PostGIS database)">🗄 Database</button>
     <button class="btn btn-ghost" id="btnSettings" title="Settings">⚙ Settings</button>
   </div>
 </header>
 
 <div id="map"></div>
+
+<!-- Classified event detail drawer (right side) -->
+<aside class="detail-drawer" id="detailDrawer">
+  <div class="drawer-head">
+    <h2>Classified event</h2>
+    <button class="btn btn-ghost drawer-close" id="drawerClose" title="Close">×</button>
+  </div>
+  <div class="drawer-scroll" id="drawerContent"></div>
+</aside>
 
 <!-- Layer controls -->
 <div class="layer-control" id="layerControl">
@@ -82,6 +92,27 @@
     </div>
     <div class="modal-actions">
       <button class="btn btn-primary" data-close>Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="dbModal" hidden>
+  <div class="modal db-modal">
+    <div class="modal-head">
+      <h2>Detection database <span class="db-badge" id="dbCount">0</span></h2>
+      <button class="btn btn-ghost" data-db-close>×</button>
+    </div>
+    <div class="db-meta" id="dbMeta">loading…</div>
+    <div class="db-actions">
+      <button class="btn btn-primary" id="btnDbRefresh">⟳ Refresh</button>
+    </div>
+    <div class="db-scroll">
+      <table class="db-table">
+        <thead>
+          <tr><th>ID</th><th>Classification</th><th>Confidence</th><th>Location</th><th>Temp · PM2.5</th><th>Timestamp</th></tr>
+        </thead>
+        <tbody id="dbBody"></tbody>
+      </table>
     </div>
   </div>
 </div>

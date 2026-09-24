@@ -85,24 +85,43 @@ _fires_cache = {"ts": 0, "data": None}
 _db = {"ready": None, "module": None}
 
 
+def _load_local_gis():
+    """Load the local GeoJSON GIS store (no database server required)."""
+    try:
+        import gis_store
+        gis_store.init_db()
+        logger.info("GIS backend: local GeoJSON store (data/gis/detections.geojson)")
+        return gis_store
+    except Exception as e:
+        logger.warning("Local GIS store unavailable (%s)", e)
+        _db["ready"] = False
+        return None
+
+
 def db() -> "module or None":
-    """Lazily import the merged repo's PostGIS module. Returns None if unavailable."""
+    """Lazily load a GIS storage backend: PostgreSQL/PostGIS when available,
+    otherwise a local GeoJSON store so the map overlay always works."""
     if _db["module"] is not None:
         return _db["module"]
     if _db["ready"] is False:
         return None
+
+    want = os.environ.get("GIS_BACKEND", "").strip().lower()
+    if want in ("geojson", "local"):
+        _db["module"] = _load_local_gis()
+        return _db["module"]
+
     try:
         import database
+        database.init_db()
         _db["module"] = database
-        try:
-            database.init_db()
-        except Exception as e:
-            logger.warning("PostGIS init failed (%s) — detections will not persist", e)
+        logger.info("GIS backend: PostgreSQL/PostGIS")
         return database
     except Exception as e:
-        logger.warning("PostGIS driver unavailable (%s) — install psycopg[binary] + run PostgreSQL to enable storage", e)
-        _db["ready"] = False
-        return None
+        logger.warning("PostGIS unavailable (%s) — falling back to local GeoJSON GIS store", e)
+
+    _db["module"] = _load_local_gis()
+    return _db["module"]
 
 
 def classify_and_persist(lat: float, lon: float, utc, weather_result: dict, fire: bool, source: str = "map_analyze", image_path=None, cls=None):
