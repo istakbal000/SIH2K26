@@ -9,23 +9,31 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+def _clean(s):
+    """Strip whitespace so stray spaces/newlines in env vars can't break conninfo."""
+    return "" if s is None else str(s).strip()
+
+
 def get_db_connection():
     """
     Creates a new database connection using environment variables.
     Defaults to localhost postgres if variables are not set.
     """
-    host = os.getenv("POSTGRES_HOST", "localhost")
-    port = os.getenv("POSTGRES_PORT", "5432")
-    dbname = os.getenv("POSTGRES_DB", "postgres")
-    user = os.getenv("POSTGRES_USER", "postgres")
-    password = os.getenv("POSTGRES_PASSWORD", "")
-    
+    host = _clean(os.getenv("POSTGRES_HOST", "localhost"))
+    port = _clean(os.getenv("POSTGRES_PORT", "5432"))
+    dbname = _clean(os.getenv("POSTGRES_DB", "postgres"))
+    user = _clean(os.getenv("POSTGRES_USER", "postgres"))
+    password = _clean(os.getenv("POSTGRES_PASSWORD", ""))
+
     conninfo = f"host={host} port={port} dbname={dbname} user={user} password={password}"
-    
-    # Check if a direct DATABASE_URL is provided instead
-    db_url = os.getenv("DATABASE_URL")
-    if db_url:
+
+    # If a direct DATABASE_URL is provided it wins -- but only if it looks like a valid
+    # libpq URI (avoids garbage values breaking DNS resolution).
+    db_url = _clean(os.getenv("DATABASE_URL"))
+    if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
         conninfo = db_url
+    elif db_url:
+        logger.warning("DATABASE_URL ignored (not a postgres:// or postgresql:// URI)")
 
     return psycopg.connect(conninfo, row_factory=dict_row)
 
