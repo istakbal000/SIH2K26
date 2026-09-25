@@ -28,6 +28,7 @@
     </div>
     <div class="stats-chip" id="firesCount" title="Active thermal anomalies">0 anomalies</div>
     <button class="btn btn-ghost" id="btnRefresh" title="Refresh FIRMS data">⟳ Refresh</button>
+    <button class="btn btn-ghost" id="btnMonitor" title="Persistent thermal source monitoring">🔭 Monitor</button>
     <button class="btn btn-ghost" id="btnDatabase" title="View stored detections (PostGIS database)">🗄 Database</button>
     <button class="btn btn-ghost" id="btnSettings" title="Settings">⚙ Settings</button>
   </div>
@@ -112,6 +113,31 @@
           <tr><th>ID</th><th>Classification</th><th>Confidence</th><th>Location</th><th>Temp · PM2.5</th><th>Timestamp</th></tr>
         </thead>
         <tbody id="dbBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="monModal" hidden>
+  <div class="modal mon-modal">
+    <div class="modal-head">
+      <h2>Persistent source monitor <span class="db-badge" id="monCount">0</span></h2>
+      <button class="btn btn-ghost" data-mon-close>×</button>
+    </div>
+    <div class="db-meta" id="monMeta">loading…</div>
+    <div class="mon-form">
+      <input id="monName" placeholder="Source name (e.g. refinery #1)" maxlength="120">
+      <input id="monLat" placeholder="Latitude" type="number" step="0.0001">
+      <input id="monLon" placeholder="Longitude" type="number" step="0.0001">
+      <input id="monRadius" placeholder="Radius (m)" type="number" min="300" value="1500">
+      <button class="btn btn-primary" id="btnMonAdd">+ Add source</button>
+      <button class="btn btn-ghost" id="btnMonCheck">🔎 Check now</button>
+    </div>
+    <div class="mon-note">Coordinates default to the last analyzed hotspot. Sources are re-checked against live FIRMS on every sweep.</div>
+    <div class="db-scroll">
+      <table class="db-table">
+        <thead><tr><th>Source</th><th>Obs.</th><th>Max FRP</th><th>Last seen</th><th>Location</th><th></th></tr></thead>
+        <tbody id="monBody"></tbody>
       </table>
     </div>
   </div>

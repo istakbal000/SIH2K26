@@ -105,3 +105,110 @@ def get_recent_detections(limit=200):
     except Exception as e:
         logger.error("gis_store: failed to retrieve detections (%s)", e)
         return {"type": "FeatureCollection", "features": [], "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Persistent thermal source monitoring (GeoJSON mirror)
+# ---------------------------------------------------------------------------
+
+SOURCES_FILE = GIS_DIR / "sources.json"
+OBS_FILE = GIS_DIR / "observations.json"
+_MAX_SOURCES = 200
+
+
+def _read_json(path, default):
+    if not path.exists():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning("gis_store: could not read %s (%s)", path, e)
+        return default
+
+
+def _write_json(path, data):
+    GIS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+
+
+def register_source(name, lat, lon, radius_m=1500, kind="persistent"):
+    with _lock:
+        sources = _read_json(SOURCES_FILE, {})
+        if len(sources) >= _MAX_SOURCES:
+            return {"error": "source limit reached"}
+        rid = (max((int(k) for k in sources), default=0)) + 1
+        rec = {
+            "id": rid,
+            "name": name,
+            "kind": kind,
+            "latitude": float(lat),
+            "longitude": float(lon),
+            "radius_m": float(radius_m or 1500),
+            "active": True,
+            "created_at": _now_iso(),
+        }
+        sources[str(rid)] = rec
+        _write_json(SOURCES_FILE, sources)
+    return rec
+
+
+def list_sources():
+    with _lock:
+        sources = _read_json(SOURCES_FILE, {})
+        obs = _read_json(OBS_FILE, {})
+        out = {}
+        for rid, s in sources.items():
+            rec = dict(s)
+            o = obs.get(str(rid), [])
+            rec["observation_count"] = len(o)
+            rec["last_observed_at"] = o[0].get("observed_at") if o else None
+            rec["max_frp"] = max((x.get("frp") for x in o if x.get("frp") is not None), default=None)
+            rec["max_brightness"] = max((x.get("brightness") for x in o if x.get("brightness") is not None), default=None)
+            out[rid] = rec
+        return out
+
+
+def delete_source(source_id):
+    with _lock:
+        sources = _read_json(SOURCES_FILE, {})
+        obs = _read_json(OBS_FILE, {})
+        removed = sources.pop(str(source_id), None)
+        if removed is not None:
+            obs.pop(str(source_id), None)
+            _write_json(SOURCES_FILE, sources)
+            _write_json(OBS_FILE, obs)
+        return {"deleted": removed is not None}
+
+
+def log_source_observation(source_id, observed_at, frp=None, brightness=None,
+                           confidence=None, satellite=None, latitude=None, longitude=None):
+    with _lock:
+        obs = _read_json(OBS_FILE, {})
+        arr = obs.setdefault(str(source_id), [])
+        seen = {(x.get("observed_at"), x.get("latitude"), x.get("longitude")) for x in arr}
+        if (observed_at, latitude, longitude) in seen:
+            return {"saved": False, "duplicate": True}
+        arr.insert(0, {
+            "source_id": source_id,
+            "observed_at": observed_at,
+            "frp": frp,
+            "brightness": brightness,
+            "confidence": confidence,
+            "satellite": satellite,
+            "latitude": latitude,
+            "longitude": longitude,
+            "logged_at": _now_iso(),
+        })
+        del arr[500:]
+        _write_json(OBS_FILE, obs)
+    return {"saved": True, "observation_id": arr[0]["observed_at"]}
+
+
+def get_source_activity(source_id, limit=50):
+    with _lock:
+        obs = _read_json(OBS_FILE, {})
+        return obs.get(str(source_id), [])[: max(0, int(limit))]

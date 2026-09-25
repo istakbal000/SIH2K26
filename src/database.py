@@ -133,6 +133,44 @@ def init_db():
                     CREATE INDEX IF NOT EXISTS idx_user_fire_detections_created_at 
                     ON user_fire_detections (created_at DESC);
                 """)
+
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS monitored_sources (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(120) NOT NULL,
+                        kind VARCHAR(50) DEFAULT 'persistent',
+                        latitude DOUBLE PRECISION NOT NULL,
+                        longitude DOUBLE PRECISION NOT NULL,
+                        radius_m DOUBLE PRECISION DEFAULT 1500,
+                        active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS source_observations (
+                        id SERIAL PRIMARY KEY,
+                        source_id INTEGER NOT NULL REFERENCES monitored_sources(id) ON DELETE CASCADE,
+                        observed_at BIGINT,
+                        frp DOUBLE PRECISION,
+                        brightness DOUBLE PRECISION,
+                        confidence VARCHAR(20),
+                        satellite VARCHAR(30),
+                        latitude DOUBLE PRECISION,
+                        longitude DOUBLE PRECISION,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_source_observations_source
+                    ON source_observations (source_id, observed_at DESC);
+                """)
+                if has_postgis:
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_monitored_sources_geom
+                        ON monitored_sources USING GIST(
+                            ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)
+                        );
+                    """)
             conn.commit()
 
             # If PostGIS is now available but the table was created earlier without geom column, upgrade it
@@ -282,3 +320,127 @@ def get_recent_detections(limit=50):
     except Exception as e:
         logger.error(f"Failed to retrieve detections: {e}")
         return {"type": "FeatureCollection", "features": [], "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Persistent thermal source monitoring
+# ---------------------------------------------------------------------------
+
+def register_source(name, lat, lon, radius_m=1500, kind="persistent"):
+    """Register a location to be monitored for recurring thermal anomalies."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO monitored_sources (name, latitude, longitude, radius_m, kind)
+                    VALUES (%(name)s, %(lat)s, %(lon)s, %(radius_m)s, %(kind)s)
+                    RETURNING id, name, kind, latitude, longitude, radius_m, active, created_at;
+                """, {"name": name, "lat": lat, "lon": lon, "radius_m": radius_m, "kind": kind})
+                row = cur.fetchone()
+            conn.commit()
+        return row or {"error": "no row returned"}
+    except Exception as e:
+        logger.error(f"Failed to register source: {e}")
+        return {"error": str(e)}
+
+
+def list_sources():
+    """List monitored sources with observation counts and last-seen info."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT s.id, s.name, s.kind, s.latitude, s.longitude,
+                           s.radius_m, s.active, s.created_at,
+                           COUNT(o.id) AS observation_count,
+                           MAX(o.observed_at) AS last_observed_at,
+                           MAX(o.frp) AS max_frp,
+                           MAX(o.brightness) AS max_brightness
+                    FROM monitored_sources s
+                    LEFT JOIN source_observations o ON o.source_id = s.id
+                    GROUP BY s.id
+                    ORDER BY s.created_at ASC;
+                """)
+                rows = cur.fetchall()
+        return {str(r["id"]): dict(r) for r in rows}
+    except Exception as e:
+        logger.error(f"Failed to list sources: {e}")
+        return {}
+
+
+def delete_source(source_id):
+    """Delete a monitored source (and cascade its observations)."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM monitored_sources WHERE id = %s RETURNING id;", (source_id,))
+                deleted = cur.fetchone()
+            conn.commit()
+        return {"deleted": bool(deleted)}
+    except Exception as e:
+        logger.error(f"Failed to delete source: {e}")
+        return {"deleted": False, "error": str(e)}
+
+
+def log_source_observation(source_id, observed_at, frp=None, brightness=None,
+                           confidence=None, satellite=None, latitude=None, longitude=None):
+    """Log a thermal anomaly observed near a monitored source (deduped per source+time+point)."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id FROM source_observations
+                    WHERE source_id = %(source_id)s
+                      AND observed_at = %(observed_at)s
+                      AND latitude = %(latitude)s
+                      AND longitude = %(longitude)s
+                    LIMIT 1;
+                """, {"source_id": source_id, "observed_at": observed_at,
+                      "latitude": latitude, "longitude": longitude})
+                if cur.fetchone():
+                    return {"saved": False, "duplicate": True}
+                cur.execute("""
+                    INSERT INTO source_observations (
+                        source_id, observed_at, frp, brightness, confidence,
+                        satellite, latitude, longitude
+                    ) VALUES (
+                        %(source_id)s, %(observed_at)s, %(frp)s, %(brightness)s,
+                        %(confidence)s, %(satellite)s, %(latitude)s, %(longitude)s
+                    )
+                    RETURNING id;
+                """, {
+                    "source_id": source_id,
+                    "observed_at": observed_at,
+                    "frp": frp,
+                    "brightness": brightness,
+                    "confidence": confidence,
+                    "satellite": satellite,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                })
+                rid = cur.fetchone()["id"]
+            conn.commit()
+        return {"saved": True, "observation_id": rid}
+    except Exception as e:
+        logger.error(f"Failed to log observation: {e}")
+        return {"saved": False, "error": str(e)}
+
+
+def get_source_activity(source_id, limit=50):
+    """Return the observation history for a monitored source (newest first)."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, source_id, observed_at, frp, brightness, confidence,
+                           satellite, latitude, longitude, created_at
+                    FROM source_observations
+                    WHERE source_id = %s
+                    ORDER BY observed_at DESC
+                    LIMIT %s;
+                """, (source_id, max(0, int(limit))))
+                rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Failed to fetch activity: {e}")
+        return []

@@ -8,12 +8,15 @@ const state = {
   indiaLayer: null,
   firesLayer: null,
   detectionsLayer: null,
+  monitorLayer: null,
   gisVisible: true,
+  monitorsVisible: true,
   markers: [],
   refreshTimer: null,
   currentFire: null,
   detMarkers: {},
   serverConfig: null,
+  lastHotspot: { lat: 22.5, lon: 79.0 },
 };
 
 const clsMeta = {
@@ -28,6 +31,7 @@ const els = {
   statusText: document.getElementById('statusText'),
   firesCount: document.getElementById('firesCount'),
   btnRefresh: document.getElementById('btnRefresh'),
+  btnMonitor: document.getElementById('btnMonitor'),
   btnDatabase: document.getElementById('btnDatabase'),
   btnSettings: document.getElementById('btnSettings'),
   detailDrawer: document.getElementById('detailDrawer'),
@@ -39,6 +43,16 @@ const els = {
   dbMeta: document.getElementById('dbMeta'),
   dbBody: document.getElementById('dbBody'),
   btnDbRefresh: document.getElementById('btnDbRefresh'),
+  monModal: document.getElementById('monModal'),
+  monCount: document.getElementById('monCount'),
+  monMeta: document.getElementById('monMeta'),
+  monBody: document.getElementById('monBody'),
+  monName: document.getElementById('monName'),
+  monLat: document.getElementById('monLat'),
+  monLon: document.getElementById('monLon'),
+  monRadius: document.getElementById('monRadius'),
+  btnMonAdd: document.getElementById('btnMonAdd'),
+  btnMonCheck: document.getElementById('btnMonCheck'),
   dataSource: document.getElementById('dataSource'),
   serverConfigNote: document.getElementById('serverConfigNote'),
   resultPanel: document.getElementById('resultPanel'),
@@ -59,6 +73,7 @@ async function init() {
   state.refreshTimer = setInterval(refreshFires, FIRMS_REFRESH_MS);
   buildStackUI();
   await loadDetections();
+  loadMonitors();
   bindEvents();
 }
 
@@ -85,6 +100,7 @@ function initMap() {
 
   state.firesLayer = L.layerGroup().addTo(state.map);
   state.detectionsLayer = L.layerGroup().addTo(state.map);
+  state.monitorLayer = L.layerGroup().addTo(state.map);
 }
 
 /* ---------------- GIS detection overlay ---------------- */
@@ -104,6 +120,21 @@ function buildStackUI() {
       if (state.gisVisible && state.detectionsLayer.getLayers().length === 0) loadDetections();
     });
     ctrl.appendChild(btn);
+
+    const monBtn = document.createElement('button');
+    monBtn.className = 'lc-btn active';
+    monBtn.textContent = '🔭 Monitored sources';
+    monBtn.title = 'Toggle the persistent thermal source overlay';
+    monBtn.addEventListener('click', () => {
+      state.monitorsVisible = !state.monitorsVisible;
+      monBtn.classList.toggle('active', state.monitorsVisible);
+      if (state.monitorsVisible) {
+        loadMonitors();
+      } else {
+        state.monitorLayer && state.monitorLayer.clearLayers();
+      }
+    });
+    ctrl.appendChild(monBtn);
   }
   const leg = document.getElementById('legend');
   if (leg) {
@@ -114,7 +145,8 @@ function buildStackUI() {
       <div class="legend-row"><span class="swatch" style="background:#f97316"></span><span>Forest</span></div>
       <div class="legend-row"><span class="swatch" style="background:#dc2626"></span><span>Industrial</span></div>
       <div class="legend-row"><span class="swatch" style="background:#eab308"></span><span>Agricultural</span></div>
-      <div class="legend-row"><span class="swatch" style="background:#9ca3af"></span><span>Unclassified</span></div>`;
+      <div class="legend-row"><span class="swatch" style="background:#9ca3af"></span><span>Unclassified</span></div>
+      <div class="legend-row" style="margin-top:6px"><span class="swatch" style="background:#a855f7"></span><span>Monitored persistent source</span></div>`;
     leg.appendChild(ov);
   }
 }
@@ -296,6 +328,7 @@ function renderFires(fires) {
 /* ---------------- AI analysis ---------------- */
 
 async function analyzeFire(id, lat, lon, utc) {
+  state.lastHotspot = { lat, lon };
   openPanel(`
     <div class="spinner-wrap">
       <div class="spinner"></div>
@@ -563,6 +596,190 @@ function renderDbRows(feats) {
   }).join('');
 }
 
+/* ---------------- persistent source monitoring ---------------- */
+
+async function loadMonitors() {
+  try {
+    const res = await fetch('/api/monitor/sources');
+    if (!res.ok) throw new Error('monitor endpoint failed');
+    const data = await res.json();
+    const sources = data.sources || [];
+    state.monitorSources = sources;
+    renderMonitorMarkers(sources);
+    const count = els.monCount;
+    if (count) count.textContent = sources.length;
+    return sources;
+  } catch (e) {
+    console.warn('monitor sources unavailable', e);
+    return [];
+  }
+}
+
+function renderMonitorMarkers(sources) {
+  const layer = state.monitorLayer;
+  if (!layer) return;
+  layer.clearLayers();
+  if (!state.monitorsVisible) return;
+  sources.forEach(s => {
+    const lat = +s.latitude, lon = +s.longitude;
+    const conf = s.observation_count || 0;
+    const m = L.circleMarker([lat, lon], {
+      radius: 12,
+      color: '#a855f7',
+      weight: 2,
+      fillColor: conf > 0 ? '#a855f7' : '#334155',
+      fillOpacity: 0.55,
+      className: 'mon-marker' + (conf > 0 ? ' pulse-mon' : ''),
+    });
+    const last = s.last_observed_at != null ? formatEpoch(s.last_observed_at) : '—';
+    m.bindPopup(`
+      <div class="popup-title">Persistent source · ${String(s.name || '—').replace(/</g, '&lt;')}</div>
+      <div class="popup-line">🏷 ${s.kind || 'persistent'} · radius ${Math.round(s.radius_m || 1500)} m</div>
+      <div class="popup-line">🔥 ${conf} observation${conf === 1 ? '' : 's'} · max FRP ${s.max_frp != null ? (+s.max_frp).toFixed(1) : '—'}</div>
+      <div class="popup-line">🕐 last seen ${last}</div>
+      ${conf > 0
+        ? `<button class="btn btn-primary popup-cta" onclick="viewMonitorActivity(${s.id})">📊 View activity</button>`
+        : `<div class="popup-line" style="color:#94a3b8">No matched anomaly yet — monitoring for it on each FIRMS sweep.</div>`}
+      <button class="btn btn-ghost popup-cta" onclick="removeMonitor(${s.id})">🗑 Remove source</button>
+    `);
+    m.addTo(layer);
+  });
+}
+
+async function refreshMonitors() {
+  await loadMonitors();
+  const count = state.monitorSources ? state.monitorSources.length : 0;
+  if (els.monCount) els.monCount.textContent = count;
+  const meta = els.monMeta;
+  if (meta) meta.textContent = `PostGIS/GeoJSON · monitored_sources → source_observations · ${count} source${count === 1 ? '' : 's'}`;
+  renderMonitorsTable();
+}
+
+function renderMonitorsTable() {
+  const body = els.monBody;
+  if (!body) return;
+  const src = state.monitorSources || [];
+  if (!src.length) {
+    body.innerHTML = '<tr><td colspan="6" class="db-empty">No monitored sources yet — add one below (coords default to the last analyzed hotspot).</td></tr>';
+    return;
+  }
+  body.innerHTML = src.map(s => `
+    <tr>
+      <td><b>${String(s.name || '—').replace(/</g, '&lt;')}</b><br><small>${s.kind || 'persistent'}</small></td>
+      <td>${s.observation_count || 0}</td>
+      <td>${s.max_frp != null ? (+s.max_frp).toFixed(1) : '—'}</td>
+      <td>${s.last_observed_at != null ? formatEpoch(s.last_observed_at) : '—'}</td>
+      <td>${(+s.latitude).toFixed(4)}, ${(+s.longitude).toFixed(4)}</td>
+      <td><button class="btn btn-ghost" onclick="removeMonitor(${s.id})">🗑</button></td>
+    </tr>`).join('');
+}
+
+async function addMonitor() {
+  const name = (els.monName.value || '').trim() || 'persistent source';
+  const lat = parseFloat(els.monLat.value);
+  const lon = parseFloat(els.monLon.value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    toast('Enter valid latitude/longitude', true);
+    return;
+  }
+  const radius = parseFloat(els.monRadius.value) || 1500;
+  try {
+    const res = await fetch('/api/monitor/sources', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, lat, lon, radius_m: radius }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'add failed');
+    toast('Source added — monitoring now');
+    els.monName.value = '';
+    await refreshMonitors();
+  } catch (e) {
+    toast('⚠ ' + e.message, true);
+  }
+}
+
+async function removeMonitor(id) {
+  try {
+    const res = await fetch('/api/monitor/sources/' + id, { method: 'DELETE' });
+    await res.json();
+    toast('Source removed');
+    await refreshMonitors();
+  } catch (e) {
+    toast('⚠ ' + e.message, true);
+  }
+}
+
+async function checkMonitors() {
+  if (els.btnMonCheck) {
+    els.btnMonCheck.disabled = true;
+    els.btnMonCheck.textContent = 'Checking…';
+  }
+  try {
+    const res = await fetch('/api/monitor/check', { method: 'POST' });
+    const data = await res.json();
+    toast(`Sweep: ${data.observations || 0} new observation${data.observations === 1 ? '' : 's'} across ${data.matching_sources || 0} source${data.matching_sources === 1 ? '' : 's'}`);
+    await refreshMonitors();
+  } catch (e) {
+    toast('⚠ ' + e.message, true);
+  } finally {
+    if (els.btnMonCheck) {
+      els.btnMonCheck.disabled = false;
+      els.btnMonCheck.textContent = '🔎 Check now';
+    }
+  }
+}
+
+function openMonitorUI() {
+  if (!els.monModal) return;
+  const hs = state.lastHotspot || {};
+  if (hs.lat != null) { els.monLat.value = hs.lat; els.monLon.value = hs.lon; }
+  els.monModal.hidden = false;
+  loadMonitors().then(() => {
+    refreshMonitors();
+  });
+}
+
+function viewMonitorActivity(id) {
+  openDetailDrawerForActivity(id);
+}
+
+async function openDetailDrawerForActivity(id) {
+  try {
+    const res = await fetch('/api/monitor/activity?source_id=' + id + '&limit=25');
+    const data = await res.json();
+    const src = (state.monitorSources || []).find(s => s.id === id) || {};
+    const obs = data.observations || [];
+    els.drawerContent.innerHTML = `
+      <div class="drawer-hero" style="border-color:#a855f7">
+        <span class="drawer-emoji">🔭</span>
+        <div>
+          <div class="drawer-k">Monitored source</div>
+          <div class="drawer-v">${String(src.name || '—').replace(/</g, '&lt;')}</div>
+          <div class="drawer-sub">${src.kind || 'persistent'} · radius ${Math.round(src.radius_m || 1500)} m</div>
+        </div>
+      </div>
+      <div class="drawer-section">Observations history (${obs.length})</div>
+      <div class="db-scroll">
+        <table class="db-table">
+          <thead><tr><th>FRP</th><th>Brightness</th><th>Sat.</th><th>Observed</th></tr></thead>
+          <tbody>${obs.length ? obs.map(o => `
+            <tr>
+              <td>${o.frp != null ? (+o.frp).toFixed(1) : '—'}</td>
+              <td>${o.brightness != null ? (+o.brightness).toFixed(0) + ' K' : '—'}</td>
+              <td>${o.satellite || '—'}</td>
+              <td>${o.observed_at != null ? formatEpoch(o.observed_at) : '—'}</td>
+            </tr>`).join('') : '<tr><td colspan="4" class="db-empty">No matched observations yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+      <button class="btn btn-primary drawer-zoom" data-lat="${+src.latitude || 0}" data-lon="${+src.longitude || 0}">📌 Zoom to location on map</button>
+    `;
+    els.detailDrawer.classList.add('open');
+  } catch (e) {
+    toast('⚠ ' + e.message, true);
+  }
+}
+
 /* ---------------- panel & UI helpers ---------------- */
 
 function openPanel(html) {
@@ -648,6 +865,7 @@ function bindEvents() {
   els.btnRefresh.addEventListener('click', refreshFires);
   els.btnSettings.addEventListener('click', () => { els.settingsModal.hidden = false; });
   els.panelClose.addEventListener('click', closePanel);
+  els.btnMonitor.addEventListener('click', openMonitorUI);
   els.btnDatabase.addEventListener('click', openDatabaseUI);
   els.btnDbRefresh.addEventListener('click', loadDatabase);
   els.drawerClose.addEventListener('click', closeEventDrawer);
@@ -660,6 +878,13 @@ function bindEvents() {
   els.dbModal.addEventListener('click', (e) => {
     if (e.target === els.dbModal) els.dbModal.hidden = true;
   });
+  els.monModal.querySelectorAll('[data-mon-close]').forEach(b =>
+    b.addEventListener('click', () => els.monModal.hidden = true));
+  els.monModal.addEventListener('click', (e) => {
+    if (e.target === els.monModal) els.monModal.hidden = true;
+  });
+  els.btnMonAdd.addEventListener('click', addMonitor);
+  els.btnMonCheck.addEventListener('click', checkMonitors);
   els.settingsModal.querySelectorAll('[data-close]').forEach(b =>
     b.addEventListener('click', () => els.settingsModal.hidden = true));
   els.settingsModal.addEventListener('click', (e) => {

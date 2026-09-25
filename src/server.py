@@ -233,6 +233,162 @@ def weather():
         return jsonify({"error": f"Weather service error: {e}"}), 502
 
 
+# ---------------------------------------------------------------------------
+# Persistent thermal source monitoring
+# ---------------------------------------------------------------------------
+
+MONITOR_INTERVAL = int(os.environ.get("MONITOR_INTERVAL", "600"))
+_monitor_lock = threading.Lock()
+_last_monitor_sweep = {"ts": 0}
+
+
+def _sources_module():
+    """Pick the source/observation storage backend (mirrors db())."""
+    dm = db()
+    if dm is None:
+        return None
+    return dm
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def get_hotspots_for_monitor():
+    """Return the current hotspot list (live FIRMS when available, else demo)."""
+    key = os.environ.get("FIRMS_MAP_KEY")
+    if not key:
+        return _demo_fires()
+    now = time.time()
+    if _fires_cache["ts"] < now - 60 or not _fires_cache["data"]:
+        try:
+            bbox = os.environ.get("FIRMS_BBOX") or DEFAULT_BBOX
+            data = fetch_fires(key, bbox=bbox, days=int(os.environ.get("FIRMS_DAYS", "2")))
+            _fires_cache.update(ts=now, data=data)
+        except FirmsError as e:
+            logger.warning("monitor: FIRMS fetch failed (%s) — reusing cache if present", e)
+    return _fires_cache.get("data") or []
+
+
+def run_monitor_sweep():
+    """Match current hotspots against monitored sources and log observations."""
+    dm = _sources_module()
+    if dm is None:
+        return {"sources": 0, "observations": 0, "error": "GIS storage unavailable"}
+    sources = dm.list_sources()
+    if not sources:
+        return {"sources": 0, "observations": 0}
+    hotspots = get_hotspots_for_monitor()
+    if not hotspots:
+        return {"sources": len(sources), "observations": 0, "note": "no hotspots"}
+
+    observations = 0
+    matched_per_source = {}
+    for sid, src in sources.items():
+        try:
+            slat, slon = float(src["latitude"]), float(src["longitude"])
+            radius = float(src.get("radius_m") or 1500)
+        except (TypeError, ValueError, KeyError):
+            continue
+        for h in hotspots:
+            try:
+                d = _haversine_m(slat, slon, float(h["latitude"]), float(h["longitude"]))
+            except (TypeError, ValueError):
+                continue
+            if d <= radius:
+                res = dm.log_source_observation(
+                    source_id=int(sid),
+                    observed_at=h.get("utc"),
+                    frp=h.get("frp"),
+                    brightness=h.get("brightness"),
+                    confidence=h.get("confidence"),
+                    satellite=h.get("satellite"),
+                    latitude=h.get("latitude"),
+                    longitude=h.get("longitude"),
+                )
+                if res.get("saved"):
+                    observations += 1
+                matched_per_source.setdefault(int(sid), []).append(h)
+    _last_monitor_sweep["ts"] = time.time()
+    return {
+        "sources": len(sources),
+        "hotspots": len(hotspots),
+        "observations": observations,
+        "matching_sources": len(matched_per_source),
+        "sweep_at": _last_monitor_sweep["ts"],
+    }
+
+
+def _monitor_loop():
+    while True:
+        try:
+            run_monitor_sweep()
+        except Exception as e:
+            logger.warning("monitor loop error: %s", e)
+        time.sleep(MONITOR_INTERVAL)
+
+
+@app.route("/api/monitor/sources", methods=["GET"])
+def monitor_sources():
+    dm = _sources_module()
+    if dm is None:
+        return jsonify({"sources": [], "error": "GIS storage unavailable"}), 200
+    data = dm.list_sources()
+    return jsonify({"sources": list(data.values())})
+
+
+@app.route("/api/monitor/sources", methods=["POST"])
+def monitor_register():
+    body = request.get_json(silent=True) or {}
+    lat, lon = _parse_coords(body)
+    if lat is None:
+        return jsonify({"error": "lat and lon required"}), 400
+    dm = _sources_module()
+    if dm is None:
+        return jsonify({"error": "GIS storage unavailable"}), 200
+    name = (body.get("name") or "").strip() or "persistent"
+    kind = (body.get("kind") or "persistent").strip()[:50] or "persistent"
+    radius_m = float(body.get("radius_m") or 1500)
+    radius_m = max(300.0, min(float(radius_m), 10000.0))
+    res = dm.register_source(name=name[:120], lat=lat, lon=lon, radius_m=radius_m, kind=kind)
+    return jsonify(res), (400 if "error" in res else 200)
+
+
+@app.route("/api/monitor/sources/<int:source_id>", methods=["DELETE"])
+def monitor_delete(source_id):
+    dm = _sources_module()
+    if dm is None:
+        return jsonify({"deleted": False, "error": "GIS storage unavailable"}), 200
+    return jsonify(dm.delete_source(source_id))
+
+
+@app.route("/api/monitor/activity")
+def monitor_activity():
+    sid = request.args.get("source_id")
+    if not sid:
+        return jsonify({"error": "source_id required"}), 400
+    limit = int(request.args.get("limit", 50))
+    dm = _sources_module()
+    if dm is None:
+        return jsonify({"observations": []}), 200
+    try:
+        obs = dm.get_source_activity(int(sid), limit=limit)
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid source_id"}), 400
+    return jsonify({"source_id": int(sid), "observations": obs})
+
+
+@app.route("/api/monitor/check", methods=["POST"])
+def monitor_check():
+    with _monitor_lock:
+        return jsonify(run_monitor_sweep())
+
+
 def assemble_features(lat: float, lon: float, utc, supplied: dict) -> tuple:
     """Fetch live weather + air quality and assemble the input feature dict for the tabular model."""
     weather_result = {"weather": None, "air_quality": None}
@@ -711,6 +867,22 @@ def _demo_fires():
             "utc": now - random.randint(0, 48 * 3600),
         })
     return fires
+
+
+_MONITOR_THREAD_STARTED = False
+
+
+def start_monitor_thread():
+    """Start the background monitoring sweep (daemon). Safe to call multiple times."""
+    global _MONITOR_THREAD_STARTED
+    if not _MONITOR_THREAD_STARTED and os.environ.get("MONITOR_ENABLED", "1") not in ("0", "false", "False"):
+        _MONITOR_THREAD_STARTED = True
+        t = threading.Thread(target=_monitor_loop, name="monitor-loop", daemon=True)
+        t.start()
+        logger.info("Persistent source monitor thread started (interval %ss)", MONITOR_INTERVAL)
+
+
+start_monitor_thread()
 
 
 if __name__ == "__main__":

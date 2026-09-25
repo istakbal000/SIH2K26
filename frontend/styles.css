@@ -143,6 +143,12 @@ body {
   50% { opacity: 0.55; }
 }
 
+.mon-marker.pulse-mon .leaflet-interactive { animation: monpulse 2s ease-in-out infinite; }
+@keyframes monpulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* ---------- Result panel ---------- */
 .result-panel {
   position: absolute;
@@ -285,6 +291,15 @@ body {
 .modal-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 
 /* ---------- Detection database modal ---------- */
+.mon-modal { width: min(820px, 94vw); }
+.mon-form { display: grid; grid-template-columns: 1.4fr 1fr 1fr .8fr auto auto; gap: 8px; margin-bottom: 6px; }
+.mon-form input {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px 10px; font-size: 12.5px; min-width: 0;
+}
+.mon-form .btn-primary { white-space: nowrap; }
+.mon-note { font-size: 11.5px; color: var(--muted); margin: 6px 0 12px; }
 .db-modal { width: min(820px, 94vw); }
 .db-badge {
   display: inline-flex; align-items: center; padding: 2px 10px;
