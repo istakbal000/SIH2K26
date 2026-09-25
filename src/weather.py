@@ -9,6 +9,8 @@ CURRENT_URL = "https://api.open-meteo.com/v1/forecast"
 AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 FALLBACK_URL = "https://wttr.in/{lat},{lon}?format=j1"
 FALLBACK_USER_AGENT = "curl"
+METNO_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat}&lon={lon}"
+METNO_USER_AGENT = "fire-detection-app/1.0 (geoflare-sih2026)"
 
 _CACHE_TTL = 600  # seconds
 _cache = {}
@@ -70,6 +72,30 @@ def _get_json(url, timeout=12, retries=2, headers=None):
                 continue
             raise
     raise last_err
+
+
+def _fallback_metno(lat, lon) -> dict:
+    data = _get_json(METNO_URL.format(lat=round(lat, 4), lon=round(lon, 4)),
+                     timeout=15, retries=0, headers={"User-Agent": METNO_USER_AGENT})
+    series = ((data.get("properties") or {}).get("timeseries")) or []
+    if not series:
+        raise RuntimeError("met.no returned no timeseries")
+    det = (series[0].get("data") or {}).get("instant", {}).get("details", {})
+    sym = (((series[0].get("data") or {}).get("next_1_hours") or {}).get("summary") or {}).get("symbol_code")
+    text = str(sym).split("_")[0].replace("clearsky", "Clear").replace("fair", "Fair").replace("lightcloud", "Fair") if sym else None
+    precipitation_mm = det.get("precipitation_amount") or ((series[1].get("data") or {}).get("instant", {}).get("details", {}) or {}).get("precipitation_amount")
+    return {
+        "temperature_c": _num(det.get("air_temperature")),
+        "humidity_pct": _num(det.get("relative_humidity")),
+        "pressure_hpa": _num(det.get("air_pressure_at_sea_level") or det.get("air_pressure")),
+        "wind_speed_kmh": _num(det.get("wind_speed")),
+        "cloud_cover_pct": _num(det.get("cloud_area_fraction")),
+        "precipitation_mm": _num(precipitation_mm),
+        "weather_code": None,
+        "weather_text": (text or "Unknown"),
+        "observation_time": series[0].get("time"),
+        "source": "met.no",
+    }
 
 
 def _fallback_weather(lat, lon) -> dict:
@@ -134,10 +160,12 @@ def get_weather(lat, lon) -> dict:
     except Exception:
         data = None
     if not data:
-        try:
-            return _fallback_weather(lat, lon)
-        except Exception:
-            raise
+        for fb in (_fallback_metno, _fallback_weather):
+            try:
+                return fb(lat, lon)
+            except Exception:
+                continue
+        raise
     code = data.get("weather_code")
     result = {
         "temperature_c": data.get("temperature_2m"),
