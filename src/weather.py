@@ -7,6 +7,8 @@ import threading
 
 CURRENT_URL = "https://api.open-meteo.com/v1/forecast"
 AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+FALLBACK_URL = "https://wttr.in/{lat},{lon}?format=j1"
+FALLBACK_USER_AGENT = "curl"
 
 _CACHE_TTL = 600  # seconds
 _cache = {}
@@ -47,20 +49,17 @@ def _throttle():
         _LAST_REQUEST_TS = time.time()
 
 
-def _get_json(url, timeout=12, retries=2):
+def _get_json(url, timeout=12, retries=2, headers=None):
     _throttle()
     last_err = None
     for attempt in range(retries + 1):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "fire-detection-app"})
+            req = urllib.request.Request(url, headers=headers or {"User-Agent": "fire-detection-app"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             last_err = e
-            if e.code == 429 and attempt < retries:
-                time.sleep(2 * (attempt + 1))
-                continue
-            if e.code >= 500 and attempt < retries:
+            if attempt < retries:
                 time.sleep(2 * (attempt + 1))
                 continue
             raise
@@ -71,6 +70,33 @@ def _get_json(url, timeout=12, retries=2):
                 continue
             raise
     raise last_err
+
+
+def _fallback_weather(lat, lon) -> dict:
+    data = _get_json(FALLBACK_URL.format(lat=round(lat, 4), lon=round(lon, 4)),
+                     timeout=15, retries=0, headers={"User-Agent": FALLBACK_USER_AGENT})
+    cond = (data.get("current_condition") or [{}])[0]
+    desc = (cond.get("weatherDesc") or [{}])
+    text = desc[0].get("value") if desc else None
+    return {
+        "temperature_c": _num(cond.get("temp_C")),
+        "humidity_pct": _num(cond.get("humidity")),
+        "pressure_hpa": _num(cond.get("pressure")),
+        "wind_speed_kmh": _num(cond.get("windspeedKmph")),
+        "cloud_cover_pct": _num(cond.get("cloudcover")),
+        "precipitation_mm": _num(cond.get("precipMM")),
+        "weather_code": None,
+        "weather_text": text,
+        "observation_time": cond.get("observation_time"),
+        "source": "wttr.in",
+    }
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _cache_get(key):
@@ -103,7 +129,15 @@ def get_weather(lat, lon) -> dict:
         "timezone": "auto",
     }
     url = CURRENT_URL + "?" + urllib.parse.urlencode(params)
-    data = _get_json(url).get("current", {})
+    try:
+        data = _get_json(url).get("current", {})
+    except Exception:
+        data = None
+    if not data:
+        try:
+            return _fallback_weather(lat, lon)
+        except Exception:
+            raise
     code = data.get("weather_code")
     result = {
         "temperature_c": data.get("temperature_2m"),
@@ -115,6 +149,7 @@ def get_weather(lat, lon) -> dict:
         "weather_code": code,
         "weather_text": WEATHER_CODE_NAMES.get(code, "Unknown"),
         "observation_time": data.get("time"),
+        "source": "open-meteo",
     }
     _cache_put(f"w:{key}", result)
     return result
@@ -130,7 +165,10 @@ def get_air_quality(lat, lon) -> dict:
         "current": "pm2_5,pm10,us_aqi",
     }
     url = AQ_URL + "?" + urllib.parse.urlencode(params)
-    data = _get_json(url).get("current", {})
+    try:
+        data = _get_json(url).get("current", {})
+    except Exception:
+        return {}
     result = {
         "pm2_5": data.get("pm2_5"),
         "pm10": data.get("pm10"),
